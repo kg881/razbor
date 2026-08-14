@@ -1,0 +1,795 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Разбор — учить язык по видео</title>
+<style>
+/* ============================================================
+   Палитра. Тёмная тема — основная (инструмент для просмотра видео),
+   светлая переопределяет токены. Акцент один на всё приложение: коралл.
+   Семантика отдельно от акцента: зелёный = слово уже в колоде.
+   ============================================================ */
+:root {
+  --ground:      #0e1317;
+  --surface:     #161d23;
+  --surface-2:   #1e272f;
+  --line:        #2a353f;
+  --text:        #e6edf2;
+  --text-soft:   #9fb1c0;
+  --text-mute:   #6b7f8f;
+  --accent:      #ff6b4a;
+  --accent-soft: #3a1f18;
+  --known:       #4fa87a;
+  --known-soft:  #14291f;
+  --track-2:     #7f95a8;
+
+  --radius: 10px;
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --font-read: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ground:      #f4f7f9;
+    --surface:     #ffffff;
+    --surface-2:   #eaeff3;
+    --line:        #d6dfe6;
+    --text:        #141c24;
+    --text-soft:   #4c5c69;
+    --text-mute:   #7a8b98;
+    --accent:      #d9411f;
+    --accent-soft: #fde8e2;
+    --known:       #2e7d55;
+    --known-soft:  #dff0e6;
+    --track-2:     #64798a;
+  }
+}
+:root[data-theme="light"] {
+  --ground:      #f4f7f9;
+  --surface:     #ffffff;
+  --surface-2:   #eaeff3;
+  --line:        #d6dfe6;
+  --text:        #141c24;
+  --text-soft:   #4c5c69;
+  --text-mute:   #7a8b98;
+  --accent:      #d9411f;
+  --accent-soft: #fde8e2;
+  --known:       #2e7d55;
+  --known-soft:  #dff0e6;
+  --track-2:     #64798a;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+button:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ---------- Каркас ---------- */
+.app {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-rows: auto 1fr;
+  height: 100dvh;
+  max-width: 1500px;
+  margin: 0 auto;
+}
+.topbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0 1.25rem;
+  height: 60px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.brand {
+  font-weight: 640;
+  letter-spacing: -0.02em;
+  font-size: 1.05rem;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.brand-mark {
+  width: 22px; height: 22px;
+  border-radius: 5px;
+  background: var(--accent);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.brand-mark::after {
+  content: "";
+  width: 11px; height: 2px;
+  background: var(--ground);
+  box-shadow: 0 4px 0 var(--ground);
+  border-radius: 1px;
+}
+.url-form { display: flex; gap: 0.5rem; flex: 1; max-width: 460px; }
+.url-form input {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.75rem;
+  font: inherit;
+  min-width: 0;
+}
+.url-form input::placeholder { color: var(--text-mute); }
+.url-form input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+.btn {
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--radius);
+  padding: 0.5rem 1rem;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: transform .12s ease, filter .12s ease;
+}
+.btn:hover { filter: brightness(1.08); }
+.btn:active { transform: translateY(1px); }
+.btn-ghost {
+  background: var(--surface-2);
+  color: var(--text-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.4rem 0.8rem;
+  font-weight: 500;
+}
+.btn-ghost:hover { color: var(--text); border-color: var(--text-mute); }
+.btn-ghost[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+
+/* ---------- Левая колонка ---------- */
+.main { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.stage { background: #000; flex: none; }
+.player-box { position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: 44vh; }
+.player-box iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  flex: none;
+  flex-wrap: wrap;
+}
+.tc {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+.legend { display: flex; gap: 0.9rem; align-items: center; font-size: 0.75rem; color: var(--text-mute); }
+.legend i { font-style: normal; display: inline-flex; align-items: center; gap: 0.3rem; }
+.legend i::before {
+  content: ""; width: 10px; height: 3px; border-radius: 2px; background: var(--accent);
+}
+.legend i.known::before { background: var(--known); }
+
+/* ---------- Расшифровка: главная поверхность чтения ---------- */
+.transcript {
+  overflow-y: auto;
+  padding: 1.5rem 1.25rem 40vh;
+  font-family: var(--font-read);
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  .transcript { scroll-behavior: auto; }
+}
+.cue {
+  display: grid;
+  grid-template-columns: 3.6rem minmax(0, 1fr);
+  gap: 0 1rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius);
+  align-items: start;
+}
+.cue + .cue { margin-top: 0.15rem; }
+.cue-time {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-mute);
+  padding-top: 0.42rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  cursor: pointer;
+}
+.cue-time:hover { color: var(--accent); }
+.cue-body { min-width: 0; }
+.cue-orig { font-size: 1.22rem; line-height: 1.55; letter-spacing: -0.008em; }
+.cue-tr {
+  font-size: 0.92rem;
+  color: var(--track-2);
+  margin-top: 0.2rem;
+  min-height: 1.1em;
+}
+.cue.active { background: var(--surface); }
+.cue.active .cue-time { color: var(--accent); }
+
+/* Слово — основной интерактивный примитив */
+.w {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 1px;
+  transition: background-color .1s ease, color .1s ease;
+}
+.w:hover { background: var(--surface-2); }
+.w.spoken { color: var(--text-soft); }
+.w.now {
+  background: var(--accent);
+  color: #fff;
+}
+.w.known {
+  box-shadow: inset 0 -2px 0 var(--known);
+}
+.w.now.known { box-shadow: inset 0 -2px 0 rgba(255,255,255,.55); }
+
+/* ---------- Правая колонка ---------- */
+.side {
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+.tabs { display: flex; border-bottom: 1px solid var(--line); flex: none; }
+.tab {
+  flex: 1;
+  padding: 0.85rem 0.5rem;
+  font-size: 0.82rem;
+  font-weight: 560;
+  color: var(--text-mute);
+  border-bottom: 2px solid transparent;
+  transition: color .12s ease;
+}
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.tab:hover { color: var(--text-soft); }
+.panel { overflow-y: auto; padding: 1.1rem; flex: 1; display: none; }
+.panel[data-open="true"] { display: block; }
+
+/* Карточка слова */
+.lookup-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.lookup-word { font-size: 1.7rem; font-weight: 620; letter-spacing: -0.02em; font-family: var(--font-read); }
+.lookup-tr { font-size: 1.05rem; color: var(--accent); margin-top: 0.35rem; }
+.lookup-miss { font-size: 0.88rem; color: var(--text-mute); margin-top: 0.35rem; line-height: 1.45; }
+.context {
+  margin-top: 1.1rem;
+  padding: 0.85rem 0.95rem;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  border-left: 2px solid var(--accent);
+}
+.context-label {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  display: block;
+  margin-bottom: 0.4rem;
+}
+.context-text { font-family: var(--font-read); font-size: 0.98rem; line-height: 1.5; }
+.context-text b { color: var(--accent); font-weight: 620; }
+.lookup-actions { display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; }
+
+/* Колода */
+.deck-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 1.1rem;
+}
+.stat { background: var(--surface); padding: 0.7rem 0.6rem; text-align: center; }
+.stat b { display: block; font-size: 1.35rem; font-variant-numeric: tabular-nums; font-weight: 620; }
+.stat span { font-size: 0.68rem; color: var(--text-mute); }
+.card-row {
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 0.7rem;
+  align-items: baseline;
+}
+.card-row:last-child { border-bottom: 0; }
+.card-w { font-weight: 600; font-family: var(--font-read); }
+.card-tr { color: var(--text-soft); font-size: 0.86rem; flex: 1; min-width: 0; }
+.card-jump {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.card-jump:hover { color: var(--accent); }
+
+/* Пустое состояние */
+.empty { text-align: center; padding: 2.5rem 1rem; color: var(--text-mute); }
+.empty-title { color: var(--text-soft); font-weight: 560; margin-bottom: 0.4rem; }
+.empty p { margin: 0; font-size: 0.88rem; line-height: 1.5; }
+
+/* Повторение */
+.review-card {
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  padding: 1.5rem 1.2rem;
+  text-align: center;
+}
+.review-word { font-size: 2rem; font-weight: 620; font-family: var(--font-read); letter-spacing: -0.02em; }
+.review-ctx { margin-top: 1rem; font-size: 0.92rem; color: var(--text-soft); line-height: 1.5; font-family: var(--font-read); }
+.review-ctx b { color: var(--accent); }
+.review-answer { margin-top: 1rem; font-size: 1.15rem; color: var(--accent); }
+.grade-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.4rem; margin-top: 1rem; }
+.grade { padding: 0.55rem 0.2rem; border: 1px solid var(--line); border-radius: 8px; font-size: 0.76rem; background: var(--surface); }
+.grade:hover { border-color: var(--accent); color: var(--accent); }
+
+.toast {
+  position: fixed;
+  bottom: 1.5rem; left: 50%;
+  transform: translateX(-50%) translateY(1rem);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 0.6rem 1.1rem;
+  border-radius: 999px;
+  font-size: 0.86rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s ease, transform .2s ease;
+  z-index: 40;
+}
+.toast[data-show="true"] { opacity: 1; transform: translateX(-50%) translateY(0); }
+@media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
+
+/* ---------- Мобильная раскладка ---------- */
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; height: auto; min-height: 100dvh; }
+  .player-box { max-height: none; }
+  .side {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    position: sticky;
+    bottom: 0;
+    max-height: 52dvh;
+  }
+  .transcript { padding-bottom: 2rem; }
+  .url-form { max-width: none; }
+  .topbar { flex-wrap: wrap; height: auto; padding: 0.6rem 1rem; }
+  .cue { grid-template-columns: 3rem minmax(0, 1fr); }
+  .cue-orig { font-size: 1.12rem; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Разбор</div>
+    <form class="url-form" id="urlForm">
+      <input id="urlInput" type="text" placeholder="Ссылка на YouTube" aria-label="Ссылка на видео YouTube">
+      <button class="btn" type="submit">Открыть</button>
+    </form>
+    <button class="btn-ghost" id="themeBtn" type="button">Тема</button>
+  </header>
+
+  <main class="main">
+    <div class="stage">
+      <div class="player-box"><div id="player"></div></div>
+    </div>
+
+    <div class="controls">
+      <button class="btn-ghost" id="replayBtn" type="button" title="Переслушать текущую фразу">Переслушать фразу</button>
+      <button class="btn-ghost" id="loopBtn" type="button" aria-pressed="false">Зациклить</button>
+      <button class="btn-ghost" id="slowBtn" type="button" aria-pressed="false">0.75×</button>
+      <div class="legend">
+        <i>звучит сейчас</i>
+        <i class="known">в колоде</i>
+      </div>
+      <div class="tc" id="tc">0:00</div>
+    </div>
+
+    <div class="transcript" id="transcript"></div>
+  </main>
+
+  <aside class="side">
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="true" data-tab="lookup">Слово</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="deck">Колода</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="review">Повторение</button>
+    </div>
+    <div class="panel" data-panel="lookup" data-open="true" id="panelLookup"></div>
+    <div class="panel" data-panel="deck" id="panelDeck"></div>
+    <div class="panel" data-panel="review" id="panelReview"></div>
+  </aside>
+
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+/* ============================================================
+   Данные: реальные реплики из json3 (пословный тайминг ASR YouTube)
+   и демо-словарь. В продакшене словарь заменяется запросом к API.
+   ============================================================ */
+const CUES  = /*__CUES__*/;
+const VOCAB = /*__VOCAB__*/;
+let VIDEO_ID = "arj7oStGLkU";
+
+/* ---------- Состояние ---------- */
+const deck = new Map(JSON.parse(localStorage.getItem("razbor.deck") || "[]"));
+let current = -1, selected = null, player = null, ready = false;
+let loopCue = null, slow = false, userScrolling = 0;
+
+const save = () => localStorage.setItem("razbor.deck", JSON.stringify([...deck]));
+const norm = w => w.toLowerCase().replace(/^[^\p{L}'-]+|[^\p{L}'-]+$/gu, "");
+const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.dataset.show = "true";
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => (t.dataset.show = "false"), 1800);
+}
+
+/* ---------- Отрисовка расшифровки ----------
+   Каждое слово — отдельный span: он и цель клика, и цель караоке-подсветки.
+   Слово из колоды получает нижнее подчёркивание — так виден твой словарь. */
+function renderTranscript() {
+  const box = document.getElementById("transcript");
+  box.innerHTML = "";
+  CUES.forEach((cue, ci) => {
+    const el = document.createElement("div");
+    el.className = "cue";
+    el.dataset.i = ci;
+
+    const time = document.createElement("button");
+    time.className = "cue-time";
+    time.type = "button";
+    time.textContent = fmt(cue.start);
+    time.title = "Перейти к этому моменту";
+    time.onclick = () => seek(cue.start);
+
+    const body = document.createElement("div");
+    body.className = "cue-body";
+    const orig = document.createElement("div");
+    orig.className = "cue-orig";
+
+    cue.words.forEach((wd, wi) => {
+      const s = document.createElement("span");
+      s.className = "w";
+      s.textContent = wd.w;
+      s.dataset.ci = ci;
+      s.dataset.wi = wi;
+      if (deck.has(norm(wd.w))) s.classList.add("known");
+      s.onclick = () => lookup(ci, wi);
+      orig.appendChild(s);
+      orig.appendChild(document.createTextNode(" "));
+    });
+
+    const tr = document.createElement("div");
+    tr.className = "cue-tr";
+    tr.textContent = translateCue(cue);
+
+    body.append(orig, tr);
+    el.append(time, body);
+    box.appendChild(el);
+  });
+}
+
+/* Вторая дорожка. В прототипе это подстрочник по словам, поэтому служебные
+   слова (артикли, связки) выбрасываем — иначе строка забивается пометками
+   вроде «неопред. артикль» и читать её невозможно.
+   В продакшене здесь машинный перевод реплики целиком, а не склейка слов. */
+const GLOSS_SKIP = /артикль|\(быть\)|^и$|^в$|^к, чтобы$/;
+function translateCue(cue) {
+  const parts = cue.words
+    .map(w => VOCAB[norm(w.w)])
+    .filter(Boolean)
+    .map(p => p.split(",")[0].split(";")[0].trim())
+    .filter(p => !GLOSS_SKIP.test(p));
+  return parts.length >= 3 ? parts.join(" ") : "";
+}
+
+/* ---------- Караоке-подсветка ----------
+   У IFrame API нет события timeupdate, поэтому опрашиваем getCurrentTime()
+   в rAF и интерполируем между тиками, иначе подсветка дёргается. */
+let lastT = 0, lastStamp = 0;
+function tick() {
+  requestAnimationFrame(tick);
+  if (!ready || !player.getCurrentTime) return;
+
+  const raw = player.getCurrentTime();
+  if (raw !== lastT) { lastT = raw; lastStamp = performance.now(); }
+  const playing = player.getPlayerState && player.getPlayerState() === 1;
+  const t = playing ? raw + (performance.now() - lastStamp) / 1000 : raw;
+
+  document.getElementById("tc").textContent = fmt(t);
+
+  if (loopCue && t > loopCue.end) { seek(loopCue.start); return; }
+
+  const ci = findCue(t);
+  if (ci !== current) {
+    const prev = document.querySelector(".cue.active");
+    if (prev) {
+      prev.classList.remove("active");
+      // Снимаем подсветку со старой реплики, иначе слово в ней остаётся «звучащим»
+      prev.querySelectorAll(".w.now, .w.spoken")
+          .forEach(s => s.classList.remove("now", "spoken"));
+    }
+    if (ci >= 0) {
+      const el = document.querySelector(`.cue[data-i="${ci}"]`);
+      el?.classList.add("active");
+      if (el && Date.now() - userScrolling > 2500) {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+    }
+    current = ci;
+  }
+  if (ci >= 0) paintWords(ci, t);
+}
+
+function findCue(t) {
+  let lo = 0, hi = CUES.length - 1, res = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (CUES[mid].start <= t) { res = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return res >= 0 && t <= CUES[res].end + 0.35 ? res : -1;
+}
+
+function paintWords(ci, t) {
+  const cue = CUES[ci];
+  const spans = document.querySelectorAll(`.cue[data-i="${ci}"] .w`);
+  let active = -1;
+  for (let i = cue.words.length - 1; i >= 0; i--) {
+    if (t >= cue.words[i].t) { active = i; break; }
+  }
+  spans.forEach((s, i) => {
+    s.classList.toggle("now", i === active);
+    s.classList.toggle("spoken", i < active);
+  });
+}
+
+/* ---------- Разбор слова ---------- */
+function lookup(ci, wi) {
+  const cue = CUES[ci], word = cue.words[wi].w, key = norm(word);
+  selected = { key, word, ci, wi, cue };
+  switchTab("lookup");
+
+  const tr = VOCAB[key];
+  const ctx = cue.words
+    .map((w, i) => (i === wi ? `<b>${w.w}</b>` : w.w))
+    .join(" ");
+
+  document.getElementById("panelLookup").innerHTML = `
+    <div class="lookup-head"><span class="lookup-word">${word}</span></div>
+    ${tr
+      ? `<div class="lookup-tr">${tr}</div>`
+      : `<div class="lookup-miss">Нет в демо-словаре. В рабочей версии здесь ответ переводчика с учётом контекста фразы.</div>`}
+    <div class="context">
+      <span class="context-label">Как это звучит в видео · ${fmt(cue.start)}</span>
+      <div class="context-text">${ctx}</div>
+    </div>
+    <div class="lookup-actions">
+      <button class="btn" id="saveBtn" type="button">${deck.has(key) ? "В колоде" : "Сохранить"}</button>
+      <button class="btn-ghost" id="ctxPlay" type="button">Переслушать</button>
+    </div>`;
+
+  document.getElementById("saveBtn").onclick = () => addCard(key, word, tr, cue, wi);
+  document.getElementById("ctxPlay").onclick = () => replay(cue);
+}
+
+function addCard(key, word, tr, cue, wi) {
+  if (deck.has(key)) { toast("Уже в колоде"); return; }
+  deck.set(key, {
+    word, tr: tr || "",
+    ctx: cue.words.map(w => w.w).join(" "),
+    wi, at: cue.start, due: Date.now(), ease: 2.5, ivl: 0, reps: 0,
+  });
+  save();
+  document.querySelectorAll(".w").forEach(s => {
+    if (norm(s.textContent) === key) s.classList.add("known");
+  });
+  document.getElementById("saveBtn").textContent = "В колоде";
+  renderDeck();
+  toast(`«${word}» сохранено с контекстом`);
+}
+
+/* ---------- Переслушать и петля ----------
+   Вместо вырезания аудио (запрещено правилами YouTube) — перемотка внутри плеера. */
+function seek(t) { if (ready) { player.seekTo(t, true); player.playVideo(); } }
+function replay(cue) { seek(cue.start); toast("Фраза с начала"); }
+
+/* ---------- Колода ---------- */
+function renderDeck() {
+  const box = document.getElementById("panelDeck");
+  if (!deck.size) {
+    box.innerHTML = `<div class="empty">
+      <div class="empty-title">Колода пуста</div>
+      <p>Нажми любое слово в расшифровке, чтобы посмотреть перевод и сохранить его вместе с фразой из видео.</p></div>`;
+    return;
+  }
+  const due = [...deck.values()].filter(c => c.due <= Date.now()).length;
+  const rows = [...deck.entries()].map(([k, c]) => `
+    <div class="card-row">
+      <span class="card-w">${c.word}</span>
+      <span class="card-tr">${c.tr || "—"}</span>
+      <button class="card-jump" type="button" data-at="${c.at}">${fmt(c.at)}</button>
+    </div>`).join("");
+
+  box.innerHTML = `
+    <div class="deck-stats">
+      <div class="stat"><b>${deck.size}</b><span>всего</span></div>
+      <div class="stat"><b>${due}</b><span>к повтору</span></div>
+      <div class="stat"><b>${coverage()}%</b><span>понятно</span></div>
+    </div>${rows}`;
+
+  box.querySelectorAll(".card-jump").forEach(b => {
+    b.onclick = () => seek(parseFloat(b.dataset.at));
+  });
+}
+
+/* Доля слов видео, которые уже в колоде. Это и есть основа подбора i+1:
+   зная покрытие, можно искать видео нужной сложности. */
+function coverage() {
+  const all = CUES.flatMap(c => c.words.map(w => norm(w.w))).filter(Boolean);
+  const known = all.filter(w => deck.has(w)).length;
+  return all.length ? Math.round((known / all.length) * 100) : 0;
+}
+
+/* ---------- Повторение ---------- */
+let reviewKey = null, revealed = false;
+function renderReview() {
+  const box = document.getElementById("panelReview");
+  const dueCards = [...deck.entries()].filter(([, c]) => c.due <= Date.now());
+  if (!dueCards.length) {
+    box.innerHTML = `<div class="empty">
+      <div class="empty-title">${deck.size ? "На сегодня всё" : "Пока нечего повторять"}</div>
+      <p>${deck.size ? "Карточки вернутся, когда подойдёт срок." : "Сохрани несколько слов из расшифровки."}</p></div>`;
+    return;
+  }
+  const [key, c] = dueCards[0];
+  reviewKey = key;
+  const ctx = c.ctx.split(" ").map((w, i) => (i === c.wi ? `<b>${w}</b>` : w)).join(" ");
+
+  box.innerHTML = `
+    <div class="review-card">
+      <div class="review-word">${c.word}</div>
+      <div class="review-ctx">${ctx}</div>
+      ${revealed ? `<div class="review-answer">${c.tr || "нет перевода"}</div>` : ""}
+      ${revealed
+        ? `<div class="grade-row">
+             <button class="grade" data-g="1" type="button">Забыл</button>
+             <button class="grade" data-g="2" type="button">Трудно</button>
+             <button class="grade" data-g="3" type="button">Норм</button>
+             <button class="grade" data-g="4" type="button">Легко</button>
+           </div>`
+        : `<div class="grade-row" style="grid-template-columns:1fr"><button class="grade" id="revealBtn" type="button">Показать перевод</button></div>`}
+    </div>
+    <div class="lookup-actions"><button class="btn-ghost" id="revPlay" type="button">Послушать в видео</button></div>`;
+
+  document.getElementById("revPlay").onclick = () => seek(c.at);
+  if (revealed) {
+    box.querySelectorAll(".grade").forEach(b => {
+      b.onclick = () => grade(key, parseInt(b.dataset.g, 10));
+    });
+  } else {
+    document.getElementById("revealBtn").onclick = () => { revealed = true; renderReview(); };
+  }
+}
+
+/* Интервальное повторение. В продакшене — библиотека FSRS;
+   здесь упрощённый вариант, чтобы цикл был рабочим целиком. */
+function grade(key, g) {
+  const c = deck.get(key);
+  if (g === 1) { c.ivl = 0; c.ease = Math.max(1.3, c.ease - 0.2); }
+  else {
+    c.reps++;
+    c.ivl = c.ivl === 0 ? 1 : Math.round(c.ivl * c.ease * (g === 2 ? 0.6 : g === 4 ? 1.3 : 1));
+    c.ease = Math.min(3.2, c.ease + (g === 4 ? 0.15 : g === 2 ? -0.15 : 0));
+  }
+  c.due = Date.now() + Math.max(c.ivl, 0.007) * 864e5;
+  deck.set(key, c); save();
+  revealed = false;
+  renderReview(); renderDeck();
+  toast(c.ivl ? `Следующий показ через ${c.ivl} дн.` : "Вернётся сегодня");
+}
+
+/* ---------- Вкладки ---------- */
+function switchTab(name) {
+  document.querySelectorAll(".tab").forEach(t =>
+    t.setAttribute("aria-selected", String(t.dataset.tab === name)));
+  document.querySelectorAll(".panel").forEach(p =>
+    p.dataset.open = String(p.dataset.panel === name));
+  if (name === "deck") renderDeck();
+  if (name === "review") { revealed = false; renderReview(); }
+}
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => switchTab(t.dataset.tab));
+
+/* ---------- Плеер ---------- */
+function onYouTubeIframeAPIReady() {
+  player = new YT.Player("player", {
+    videoId: VIDEO_ID,
+    // cc_load_policy: 0 — гасим родные субтитры YouTube: свои две дорожки
+    // мы рисуем ПОД плеером (оверлей поверх плеера запрещён правилами).
+    playerVars: { rel: 0, modestbranding: 1, playsinline: 1, cc_load_policy: 0 },
+    events: {
+      onReady: () => { ready = true; tick(); },
+      onError: e => toast(`Плеер: ошибка ${e.data}. Видео недоступно для встраивания.`),
+    },
+  });
+}
+window.onYouTubeIframeAPIReady = onYouTubeIframeAPIReady;
+
+/* ---------- Управление ---------- */
+document.getElementById("replayBtn").onclick = () => {
+  const c = CUES[current >= 0 ? current : 0];
+  if (c) replay(c);
+};
+document.getElementById("loopBtn").onclick = e => {
+  const on = loopCue === null;
+  loopCue = on ? CUES[current >= 0 ? current : 0] : null;
+  e.currentTarget.setAttribute("aria-pressed", String(on));
+  toast(on ? "Фраза зациклена" : "Петля снята");
+};
+document.getElementById("slowBtn").onclick = e => {
+  slow = !slow;
+  if (ready) player.setPlaybackRate(slow ? 0.75 : 1);
+  e.currentTarget.setAttribute("aria-pressed", String(slow));
+};
+document.getElementById("themeBtn").onclick = () => {
+  const cur = document.documentElement.dataset.theme;
+  const next = cur === "dark" ? "light" : cur === "light" ? "" : "dark";
+  if (next) document.documentElement.dataset.theme = next;
+  else delete document.documentElement.dataset.theme;
+  toast(next === "dark" ? "Тёмная тема" : next === "light" ? "Светлая тема" : "Как в системе");
+};
+document.getElementById("urlForm").onsubmit = e => {
+  e.preventDefault();
+  const v = document.getElementById("urlInput").value.trim();
+  const m = v.match(/(?:v=|youtu\.be\/|embed\/|shorts\/)([\w-]{11})/) || v.match(/^([\w-]{11})$/);
+  if (!m) { toast("Не похоже на ссылку YouTube"); return; }
+  toast("В прототипе загружена одна расшифровка. Субтитры нового видео тянет расширение.");
+};
+document.getElementById("transcript").addEventListener("scroll", () => { userScrolling = Date.now(); });
+
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.code === "Space") { e.preventDefault(); ready && (player.getPlayerState() === 1 ? player.pauseVideo() : player.playVideo()); }
+  if (e.key === "ArrowLeft" && current > 0) seek(CUES[current - 1].start);
+  if (e.key === "ArrowRight" && current < CUES.length - 1) seek(CUES[current + 1].start);
+  if (e.key.toLowerCase() === "r") { const c = CUES[current]; c && replay(c); }
+});
+
+/* ---------- Старт ---------- */
+renderTranscript();
+renderDeck();
+const tag = document.createElement("script");
+tag.src = "https://www.youtube.com/iframe_api";
+document.head.appendChild(tag);
+</script>
+</body>
+</html>
