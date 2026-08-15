@@ -1,20 +1,23 @@
 /**
  * Бэкенд «Разбора».
  *
- * Отвечает за то, что нельзя делать в браузере:
- *   - перевод слова и фразы с учётом контекста (ключи провайдера живут только здесь),
- *   - нормализация json3 в чистые реплики с пословным таймингом,
- *   - общий кэш переводов: второй ученик на том же видео обходится бесплатно.
+ * Разделение труда выбрано по замерам, а не по интуиции (15.08.2026):
  *
- * Чего здесь СОЗНАТЕЛЬНО нет: загрузки субтитров с YouTube. Правила YouTube
- * запрещают серверный скрейпинг, а датацентровые IP всё равно блокируются.
- * Субтитры приносит клиент (расширение) из сессии пользователя — см. POST /api/cues.
+ *   /api/track  — сервер делает ОДИН дешёвый запрос и отдаёт подписанную ссылку
+ *                 на дорожку. Качает субтитры сам клиент: ссылка отдаёт CORS-заголовки
+ *                 и не привязана к IP. Лимиты YouTube размазываются по адресам
+ *                 пользователей вместо одного серверного. Основной путь.
+ *   /api/fetch  — сервер качает сам через yt-dlp. Медленно и упирается в общий IP,
+ *                 держим как запасной путь.
+ *   /api/cues   — нормализация уже добытого json3 (нужна расширению и мобильному клиенту).
+ *   /api/translate — перевод: ключи провайдера не должны попадать на клиент.
  */
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { normalizeJson3 } from './subtitles.js'
 import { fetchCues, parseVideoId } from './fetch-subs.js'
+import { getTracks, pickTrack } from './track.js'
 import { translateBatch } from './translate.js'
 import { LruTtlCache } from './cache.js'
 
@@ -43,9 +46,39 @@ app.post('/api/cues', async c => {
 // Реплики кэшируем на 30 дней: повторное открытие того же видео не дёргает YouTube.
 const cueCache = new LruTtlCache({ max: 500, ttlMs: 30 * 864e5 })
 
+// Подписанные ссылки живут ~7 часов — кэшируем на 6, с запасом.
+const trackCache = new LruTtlCache({ max: 2000, ttlMs: 6 * 3600e3 })
+
 /**
- * Главное для пользователя: вставил ссылку — получил расшифровку.
- * Ни входа в аккаунт, ни расширения не требуется.
+ * ОСНОВНОЙ путь: отдаём клиенту подписанную ссылку на дорожку, а качает он сам.
+ *
+ * Сервер делает один дешёвый запрос, тяжёлую загрузку берёт на себя браузер или
+ * телефон пользователя — ссылка отдаёт CORS-заголовки и не привязана к IP.
+ * Так лимиты YouTube размазываются по адресам пользователей, а не бьют в один серверный.
+ */
+app.post('/api/track', async c => {
+  const { url, lang = 'en' } = await c.req.json().catch(() => ({}))
+  const videoId = parseVideoId(url)
+  if (!videoId) return c.json({ error: 'Не похоже на ссылку YouTube.' }, 400)
+
+  const cached = trackCache.get(videoId)
+  if (cached) {
+    return c.json({ ...cached, picked: pickTrack(cached.tracks, lang), fromCache: true })
+  }
+
+  try {
+    const info = await getTracks(videoId)
+    trackCache.set(videoId, info)
+    return c.json({ ...info, picked: pickTrack(info.tracks, lang), fromCache: false })
+  } catch (e) {
+    const status = e.code === 'NO_SUBTITLES' ? 404 : e.code === 'BOT_WALL' ? 429 : 502
+    return c.json({ error: e.message, code: e.code }, status)
+  }
+})
+
+/**
+ * ЗАПАСНОЙ путь: сервер сам качает субтитры через yt-dlp. Медленнее и упирается
+ * в лимиты общего IP, зато переживает случаи, где основной путь не сработал.
  */
 app.post('/api/fetch', async c => {
   const { url, lang = 'en-orig' } = await c.req.json().catch(() => ({}))

@@ -787,19 +787,29 @@ document.getElementById("urlForm").onsubmit = async e => {
   const label = btn.textContent;
   btn.textContent = "Гружу…";
   btn.disabled = true;
-  showTranscriptState("Загружаю субтитры. Под ограничением скорости YouTube это занимает до двух минут.");
+  showTranscriptState("Ищу дорожку субтитров…");
 
   try {
-    const res = await fetch(`${API}/api/fetch`, {
+    // Шаг 1: у сервера просим только подписанную ссылку — это один дешёвый запрос.
+    const res = await fetch(`${API}/api/track`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ url: v }),
+      body: JSON.stringify({ url: v, lang: "en" }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Не удалось получить субтитры");
+    const info = await res.json();
+    if (!res.ok) throw new Error(info.error || "Не удалось найти субтитры");
 
-    CUES = data.cues;
-    VIDEO_ID = data.videoId;
+    // Шаг 2: качаем сами, со своего адреса. Ссылка отдаёт CORS-заголовки
+    // и не привязана к IP, поэтому браузеру это доступно напрямую.
+    showTranscriptState(`Качаю дорожку «${info.picked.name}»…`);
+    const subRes = await fetch(info.picked.url);
+    if (!subRes.ok) throw new Error(`Дорожка не отдалась (${subRes.status})`);
+    const raw = await subRes.json();
+
+    CUES = normalizeJson3(raw);
+    if (!CUES.length) throw new Error("Дорожка пустая");
+    VIDEO_ID = info.videoId;
+    const data = { cues: CUES, fromCache: info.fromCache };
     current = -1;
     loopCue = null;
     renderTranscript();
@@ -822,6 +832,52 @@ document.getElementById("urlForm").onsubmit = async e => {
 function showTranscriptState(text) {
   document.getElementById("transcript").innerHTML =
     `<div class="empty"><div class="empty-title">${text}</div></div>`;
+}
+
+/* json3 → чистые реплики. Тот же алгоритм, что на сервере: ASR присылает
+   «бегущую строку» нарастающими кусками, без схлопывания текст задваивается.
+   Пословный тайминг = tStartMs реплики + tOffsetMs сегмента. */
+function normalizeJson3(raw) {
+  const cues = [];
+  for (const ev of raw.events || []) {
+    const segs = ev.segs;
+    if (!segs?.length) continue;
+    const text = segs.map(s => s.utf8 || "").join("").replace(/\s+/g, " ").trim();
+    if (!text) continue;
+
+    const start = (ev.tStartMs ?? 0) / 1000;
+    const dur = (ev.dDurationMs ?? 0) / 1000;
+    const hasWordTiming = segs.some(s => s.tOffsetMs != null);
+
+    let words = segs
+      .map(s => ({ w: (s.utf8 || "").trim(), off: s.tOffsetMs ?? 0 }))
+      .filter(s => s.w)
+      .map(s => ({ w: s.w, t: start + s.off / 1000 }));
+
+    // Ручные субтитры пословного тайминга не несут — раскладываем по длине слов
+    if (!hasWordTiming && words.length > 1 && dur > 0) {
+      const total = words.reduce((n, x) => n + x.w.length, 0);
+      let acc = 0;
+      words = words.map(x => {
+        const t = start + (acc / total) * dur;
+        acc += x.w.length;
+        return { w: x.w, t };
+      });
+    }
+    if (words.length) cues.push({ start, end: start + dur, text, words });
+  }
+
+  const merged = [];
+  for (const c of cues) {
+    const prev = merged[merged.length - 1];
+    if (prev && c.text.startsWith(prev.text) && c.start - prev.start < 2.5) merged[merged.length - 1] = c;
+    else merged.push(c);
+  }
+  for (let i = 0; i < merged.length; i++) {
+    if (i + 1 < merged.length) merged[i].end = Math.min(merged[i].end, merged[i + 1].start);
+    if (merged[i].end <= merged[i].start) merged[i].end = merged[i].start + 1.2;
+  }
+  return merged;
 }
 document.getElementById("transcript").addEventListener("scroll", () => { userScrolling = Date.now(); });
 
