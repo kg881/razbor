@@ -97,6 +97,30 @@ async function translateBatch(b, model, signal) {
   return {}
 }
 
+/**
+ * Добивающий проход. Модель на пачке из 40 строк изредка теряет строки-огрызки
+ * («into,», «point.») — вливает их смысл в соседнюю и не возвращает ключ. Ретраить
+ * из-за одного огрызка всю пачку дорого, поэтому дырки добираем отдельным вызовом:
+ * каждой даём соседей до и после, требуем перевести именно её.
+ */
+async function fillHoles(holes, texts, model, signal) {
+  const prompt =
+    'Отдельные строки субтитров, у каждой соседи для связи (их не переводить). ' +
+    'Переведи КАЖДУЮ помеченную строку, даже если это огрызок фразы — огрызок остаётся ' +
+    'огрызком. Верни JSON {"номер": "перевод"} со всеми номерами:\n\n' +
+    holes.map(i =>
+      `  до: ${texts[i - 1] ?? '—'}\n→ ${i}: ${texts[i]}\n  после: ${texts[i + 1] ?? '—'}`
+    ).join('\n\n')
+  const reply = await runClaude(prompt, { system: SYSTEM, model, signal })
+  const obj = parseJsonReply(reply)
+  const lines = {}
+  for (const i of holes) {
+    const v = obj[String(i)]
+    if (typeof v === 'string' && v.trim()) lines[i] = v.trim()
+  }
+  return lines
+}
+
 export async function readCached(videoId) {
   try {
     return JSON.parse(await fs.readFile(path.join(DIR, `${videoId}.json`), 'utf8'))
@@ -172,6 +196,24 @@ export async function* translateVideo(videoId, texts, { model = 'sonnet', signal
       if (!running || signal?.aborted) break
       // Между проверкой и ожиданием ничего асинхронного нет, пробуждение не теряется.
       await new Promise(res => { wake = res })
+    }
+
+    // Добивающий проход по дыркам — группами, чтобы один вызов не тащил сотню строк.
+    if (!signal?.aborted) {
+      const holes = texts.map((_, i) => i).filter(i => !all[String(i)])
+      if (holes.length) console.log(`[перевод] ${videoId}: добиваю ${holes.length} дырок`)
+      for (let k = 0; k < holes.length; k += 20) {
+        const group = holes.slice(k, k + 20)
+        const lines = await fillHoles(group, texts, model, signal).catch(e => {
+          console.log(`[перевод] дырки не добились: ${e.message}`)
+          return {}
+        })
+        if (!Object.keys(lines).length) continue
+        Object.assign(all, lines)
+        done += Object.keys(lines).length
+        await writeCache(videoId, all)
+        yield { from: group[0], to: group[group.length - 1], lines, done, total: texts.length }
+      }
     }
   } finally {
     // Потребитель может бросить генератор на середине (break в for-await при обрыве
