@@ -14,6 +14,7 @@ import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { normalizeJson3 } from './subtitles.js'
+import { fetchCues, parseVideoId } from './fetch-subs.js'
 import { translateBatch } from './translate.js'
 import { LruTtlCache } from './cache.js'
 
@@ -37,6 +38,31 @@ app.post('/api/cues', async c => {
   }
   const cues = normalizeJson3(body)
   return c.json({ cues, count: cues.length })
+})
+
+// Реплики кэшируем на 30 дней: повторное открытие того же видео не дёргает YouTube.
+const cueCache = new LruTtlCache({ max: 500, ttlMs: 30 * 864e5 })
+
+/**
+ * Главное для пользователя: вставил ссылку — получил расшифровку.
+ * Ни входа в аккаунт, ни расширения не требуется.
+ */
+app.post('/api/fetch', async c => {
+  const { url, lang = 'en-orig' } = await c.req.json().catch(() => ({}))
+  const videoId = parseVideoId(url)
+  if (!videoId) return c.json({ error: 'Не похоже на ссылку YouTube.' }, 400)
+
+  const cached = cueCache.get(`${videoId}|${lang}`)
+  if (cached) return c.json({ ...cached, videoId, fromCache: true })
+
+  try {
+    const result = await fetchCues(videoId, { lang })
+    cueCache.set(`${videoId}|${lang}`, result)
+    return c.json({ ...result, videoId, fromCache: false })
+  } catch (e) {
+    const status = e.code === 'RATE_LIMITED' ? 429 : e.code === 'NO_SUBTITLES' ? 404 : 502
+    return c.json({ error: e.message, code: e.code }, status)
+  }
 })
 
 /**

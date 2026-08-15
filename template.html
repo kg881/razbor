@@ -433,9 +433,17 @@ button:focus-visible, [tabindex]:focus-visible {
    Данные: реальные реплики из json3 (пословный тайминг ASR YouTube)
    и демо-словарь. В продакшене словарь заменяется запросом к API.
    ============================================================ */
-const CUES  = /*__CUES__*/;
+let CUES  = /*__CUES__*/;
 const VOCAB = /*__VOCAB__*/;
 let VIDEO_ID = "arj7oStGLkU";
+
+/* Адрес бэкенда. Он тянет субтитры произвольного видео по ссылке: в браузере это
+   невозможно, потому что youtube.com/api/timedtext не отдаёт CORS-заголовки.
+   Переопределяется через ?api=<адрес> — удобно, когда фронт открыт на Pages,
+   а бэкенд поднят локально. */
+const API = new URLSearchParams(location.search).get("api")
+  || localStorage.getItem("razbor.api")
+  || "http://localhost:8788";
 
 /* ---------- Состояние ---------- */
 const deck = new Map(JSON.parse(localStorage.getItem("razbor.deck") || "[]"));
@@ -767,13 +775,54 @@ document.getElementById("themeBtn").onclick = () => {
   else delete document.documentElement.dataset.theme;
   toast(next === "dark" ? "Тёмная тема" : next === "light" ? "Светлая тема" : "Как в системе");
 };
-document.getElementById("urlForm").onsubmit = e => {
+/* Вставил ссылку — получил расшифровку. Ни входа в аккаунт, ни расширения. */
+document.getElementById("urlForm").onsubmit = async e => {
   e.preventDefault();
-  const v = document.getElementById("urlInput").value.trim();
-  const m = v.match(/(?:v=|youtu\.be\/|embed\/|shorts\/)([\w-]{11})/) || v.match(/^([\w-]{11})$/);
+  const input = document.getElementById("urlInput");
+  const btn = e.target.querySelector("button");
+  const v = input.value.trim();
+  const m = v.match(/(?:v=|youtu\.be\/|embed\/|shorts\/|live\/)([\w-]{11})/) || v.match(/^([\w-]{11})$/);
   if (!m) { toast("Не похоже на ссылку YouTube"); return; }
-  toast("В прототипе загружена одна расшифровка. Субтитры нового видео тянет расширение.");
+
+  const label = btn.textContent;
+  btn.textContent = "Гружу…";
+  btn.disabled = true;
+  showTranscriptState("Загружаю субтитры. Под ограничением скорости YouTube это занимает до двух минут.");
+
+  try {
+    const res = await fetch(`${API}/api/fetch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: v }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Не удалось получить субтитры");
+
+    CUES = data.cues;
+    VIDEO_ID = data.videoId;
+    current = -1;
+    loopCue = null;
+    renderTranscript();
+    renderDeck();
+    if (ready) player.loadVideoById(VIDEO_ID);
+    toast(`Загружено реплик: ${CUES.length}${data.fromCache ? " (из кэша)" : ""}`);
+  } catch (err) {
+    const offline = /Failed to fetch|NetworkError/i.test(err.message);
+    showTranscriptState(offline
+      ? `Бэкенд недоступен по адресу ${API}. Запусти его: cd server && npm start`
+      : err.message);
+    toast(offline ? "Бэкенд не запущен" : err.message);
+  } finally {
+    btn.textContent = label;
+    btn.disabled = false;
+  }
 };
+
+/* Состояние загрузки и ошибок вместо пустого экрана. */
+function showTranscriptState(text) {
+  document.getElementById("transcript").innerHTML =
+    `<div class="empty"><div class="empty-title">${text}</div></div>`;
+}
 document.getElementById("transcript").addEventListener("scroll", () => { userScrolling = Date.now(); });
 
 document.addEventListener("keydown", e => {
