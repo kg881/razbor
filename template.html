@@ -499,7 +499,7 @@ function renderTranscript() {
 
     const tr = document.createElement("div");
     tr.className = "cue-tr";
-    tr.textContent = translateCue(cue);
+    tr.textContent = translateCue(cue, ci);
 
     body.append(orig, tr);
     el.append(time, body);
@@ -507,18 +507,22 @@ function renderTranscript() {
   });
 }
 
-/* Вторая дорожка. В прототипе это подстрочник по словам, поэтому служебные
-   слова (артикли, связки) выбрасываем — иначе строка забивается пометками
-   вроде «неопред. артикль» и читать её невозможно.
-   В продакшене здесь машинный перевод реплики целиком, а не склейка слов. */
-const GLOSS_SKIP = /артикль|\(быть\)|^и$|^в$|^к, чтобы$/;
-function translateCue(cue) {
-  const parts = cue.words
-    .map(w => VOCAB[norm(w.w)])
-    .filter(Boolean)
-    .map(p => p.split(",")[0].split(";")[0].trim())
-    .filter(p => !GLOSS_SKIP.test(p));
-  return parts.length >= 3 ? parts.join(" ") : "";
+/* Вторая дорожка — готовый перевод фраз из файла data/translations/<videoId>.json.
+   Склейка по словам («они затем что они») давала нечитаемый мусор и убрана:
+   субтитры рвут предложение посередине, переводить их можно только целиком
+   и с оглядкой на соседние строки. */
+let TRANSLATIONS = {};
+
+async function loadTranslations(videoId) {
+  TRANSLATIONS = {};
+  try {
+    const r = await fetch(`data/translations/${videoId}.json`, { cache: "no-cache" });
+    if (r.ok) TRANSLATIONS = await r.json();
+  } catch { /* перевода для этого видео пока нет — вторая дорожка будет пустой */ }
+}
+
+function translateCue(cue, i) {
+  return TRANSLATIONS[i] || "";
 }
 
 /* ---------- Караоке-подсветка ----------
@@ -815,6 +819,7 @@ document.getElementById("urlForm").onsubmit = async e => {
     CUES = normalizeJson3(raw);
     if (!CUES.length) throw new Error("Дорожка пустая");
     VIDEO_ID = info.videoId;
+    await loadTranslations(VIDEO_ID);
     const data = { cues: CUES, fromCache: info.fromCache };
     current = -1;
     loopCue = null;
@@ -899,6 +904,7 @@ document.addEventListener("keydown", e => {
 });
 
 /* ---------- Старт ---------- */
+loadTranslations(VIDEO_ID).then(renderTranscript);
 renderTranscript();
 renderDeck();
 const tag = document.createElement("script");

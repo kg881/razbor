@@ -12,7 +12,11 @@ ROOT = pathlib.Path(__file__).parent
 SRC_JSON3 = sys.argv[1] if len(sys.argv) > 1 else None
 
 # 1. Реплики: нормализуем из json3, либо берём уже готовые
-cues_path = ROOT / "data" / "cues_demo.json"
+# Локальная полная расшифровка имеет приоритет; в репозитории её нет (см. .gitignore),
+# поэтому у всех остальных соберётся демо-фрагмент.
+cues_path = ROOT / "data" / "cues_local.json"
+if not cues_path.exists():
+    cues_path = ROOT / "data" / "cues_demo.json"
 if SRC_JSON3:
     out = subprocess.run(
         [sys.executable, str(ROOT / "tools" / "normalize_json3.py"), SRC_JSON3],
