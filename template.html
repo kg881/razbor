@@ -791,11 +791,17 @@ document.getElementById("urlForm").onsubmit = async e => {
 
   try {
     // Шаг 1: у сервера просим только подписанную ссылку — это один дешёвый запрос.
+    // Таймаут обязателен: страница по https не может достучаться до http://localhost
+    // (браузер блокирует обращения публичных сайтов к локальной сети), и без него
+    // запрос просто виснет вместо внятной ошибки.
+    const ac = new AbortController();
+    const killer = setTimeout(() => ac.abort(), 12000);
     const res = await fetch(`${API}/api/track`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ url: v, lang: "en" }),
-    });
+      signal: ac.signal,
+    }).finally(() => clearTimeout(killer));
     const info = await res.json();
     if (!res.ok) throw new Error(info.error || "Не удалось найти субтитры");
 
@@ -817,11 +823,14 @@ document.getElementById("urlForm").onsubmit = async e => {
     if (ready) player.loadVideoById(VIDEO_ID);
     toast(`Загружено реплик: ${CUES.length}${data.fromCache ? " (из кэша)" : ""}`);
   } catch (err) {
-    const offline = /Failed to fetch|NetworkError/i.test(err.message);
-    showTranscriptState(offline
-      ? `Бэкенд недоступен по адресу ${API}. Запусти его: cd server && npm start`
-      : err.message);
-    toast(offline ? "Бэкенд не запущен" : err.message);
+    const unreachable = /Failed to fetch|NetworkError|aborted/i.test(err.message) || err.name === "AbortError";
+    const httpsToLocal = location.protocol === "https:" && /^http:\/\/(localhost|127\.)/.test(API);
+    const msg = !unreachable ? err.message
+      : httpsToLocal
+        ? `Эта страница открыта по https и не может обращаться к бэкенду на localhost — так устроена защита браузера. Открой приложение локально: http://localhost:8777`
+        : `Бэкенд недоступен по адресу ${API}. Запусти его: cd server && npm start`;
+    showTranscriptState(msg);
+    toast(unreachable ? "Бэкенд недоступен" : err.message);
   } finally {
     btn.textContent = label;
     btn.disabled = false;
