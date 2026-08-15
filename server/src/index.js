@@ -18,7 +18,8 @@ import { cors } from 'hono/cors'
 import { normalizeJson3 } from './subtitles.js'
 import { fetchCues, parseVideoId } from './fetch-subs.js'
 import { getTracks, pickTrack } from './track.js'
-import { translateBatch } from './translate.js'
+import { translateVideo, readCached, explainWord } from './translate-video.js'
+import { claudeAvailable } from './claude.js'
 import { LruTtlCache } from './cache.js'
 
 const app = new Hono()
@@ -99,38 +100,104 @@ app.post('/api/fetch', async c => {
 })
 
 /**
- * Перевод пачкой. Клиент шлёт список слов и фразу-контекст,
- * получает переводы с учётом того, как слово употреблено.
+ * Перевод всего видео. Переводит Claude через локальный CLI — ключи провайдера не нужны.
+ *
+ * Одно видео = одна задача, как бы клиент себя ни вёл. Первый запрос запускает перевод,
+ * повторный (обновил страницу, вставил ссылку ещё раз) подключается к идущему, а не
+ * запускает второй — на тесте два параллельных прогона одного подкаста съели все слоты
+ * и молотили одни и те же пачки дважды. Обрыв клиента задачу не убивает: перевод доходит
+ * до конца, ложится в кэш, и следующее открытие видео получает всё мгновенно.
+ *
+ * Отдаём потоком (NDJSON), а не одним ответом: у длинного подкаста под сотню пачек, и если
+ * ждать последнюю, пользователь минуты смотрит в пустой экран.
  */
-app.post('/api/translate', async c => {
-  const { words, context, from = 'en', to = 'ru' } = await c.req.json().catch(() => ({}))
-  if (!Array.isArray(words) || !words.length) {
-    return c.json({ error: 'Ожидается words: непустой массив слов.' }, 400)
-  }
+const jobs = new Map() // videoId -> { lines, done, total, listeners:Set }
 
-  const pair = `${from}:${to}`
-  const ctxKey = (context || '').slice(0, 120)
-  const out = {}
-  const missing = []
+function startJob(videoId, texts) {
+  const existing = jobs.get(videoId)
+  if (existing) return existing
 
-  for (const w of words) {
-    const key = `${pair}|${w.toLowerCase()}|${ctxKey}`
-    const hit = translations.get(key)
-    // Именно undefined: пустая строка — это валидный ответ «перевода нет»,
-    // и его тоже надо кэшировать, иначе провайдер дёргается на каждом запросе.
-    if (hit !== undefined) out[w] = hit
-    else missing.push(w)
-  }
-
-  if (missing.length) {
-    const fresh = await translateBatch(missing, { context, from, to })
-    for (const [w, tr] of Object.entries(fresh)) {
-      translations.set(`${pair}|${w.toLowerCase()}|${ctxKey}`, tr)
-      out[w] = tr
+  const job = { lines: {}, done: 0, total: texts.length, listeners: new Set(), finished: false }
+  jobs.set(videoId, job)
+  ;(async () => {
+    try {
+      for await (const chunk of translateVideo(videoId, texts)) {
+        Object.assign(job.lines, chunk.lines)
+        job.done = chunk.done
+        for (const fn of job.listeners) fn(chunk)
+      }
+    } catch (e) {
+      for (const fn of job.listeners) fn({ error: e.message })
+    } finally {
+      job.finished = true
+      for (const fn of job.listeners) fn({ done: true, total: job.total })
+      jobs.delete(videoId)
+      console.log(`[перевод] ${videoId}: задача завершена, ${job.done}/${job.total}`)
     }
+  })()
+  return job
+}
+
+app.post('/api/translate-video', async c => {
+  const { videoId, texts } = await c.req.json().catch(() => ({}))
+  if (!videoId || !Array.isArray(texts) || !texts.length) {
+    return c.json({ error: 'Ожидается videoId и непустой массив texts.' }, 400)
+  }
+  if (!(await claudeAvailable())) {
+    return c.json({ error: 'Не найден claude CLI — переводить нечем.', code: 'NO_CLAUDE' }, 503)
   }
 
-  return c.json({ translations: out, fromCache: words.length - missing.length })
+  const job = startJob(videoId, texts)
+
+  return c.newResponse(
+    new ReadableStream({
+      start(ctrl) {
+        const enc = new TextEncoder()
+        const send = o => {
+          try { ctrl.enqueue(enc.encode(JSON.stringify(o) + '\n')) }
+          catch { unsub() } // клиент ушёл — просто отписываемся, задача живёт дальше
+        }
+        const listener = chunk => {
+          send(chunk)
+          if (chunk.done === true) { unsub(); try { ctrl.close() } catch { } }
+        }
+        const unsub = () => job.listeners.delete(listener)
+
+        // Догоняющее сообщение: всё, что задача успела перевести до подключения клиента.
+        if (Object.keys(job.lines).length) {
+          send({ from: 0, to: job.total - 1, lines: job.lines, done: job.done, total: job.total, cached: true })
+        }
+        if (job.finished) { send({ done: true, total: job.total }); try { ctrl.close() } catch { }; return }
+        job.listeners.add(listener)
+      },
+    }),
+    200,
+    { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' }
+  )
+})
+
+/** Готовый перевод из кэша: повторное открытие видео не гоняет модель заново. */
+app.get('/api/translation/:videoId', async c => {
+  const lines = await readCached(c.req.param('videoId'))
+  return lines ? c.json({ lines, count: Object.keys(lines).length }) : c.json({ lines: {}, count: 0 })
+})
+
+/** Разбор слова в контексте фразы — для карточки. */
+app.post('/api/word', async c => {
+  const { word, context } = await c.req.json().catch(() => ({}))
+  if (!word) return c.json({ error: 'Ожидается word.' }, 400)
+
+  const key = `word|${word.toLowerCase()}|${(context || '').slice(0, 120)}`
+  const hit = translations.get(key)
+  if (hit !== undefined) return c.json({ ...hit, fromCache: true })
+
+  try {
+    const res = await explainWord(word, context || word)
+    translations.set(key, res)
+    return c.json({ ...res, fromCache: false })
+  } catch (e) {
+    return c.json({ error: e.message }, 502)
+  }
 })
 
 const port = Number(process.env.PORT || 8788)

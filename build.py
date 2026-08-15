@@ -1,4 +1,4 @@
-"""Собирает自-contained index.html: шаблон + реальные реплики + словарь.
+"""Собирает self-contained index.html: шаблон + реальные реплики.
 
 Запуск:  python3 build.py
 Результат: index.html — открывается двойным кликом, работает без сервера.
@@ -26,11 +26,9 @@ if SRC_JSON3:
     print(out.stderr.strip())
 
 cues = json.loads(cues_path.read_text(encoding="utf-8"))
-vocab = json.loads((ROOT / "data" / "dict_en_ru.json").read_text(encoding="utf-8"))
 
 template = (ROOT / "template.html").read_text(encoding="utf-8")
 html = template.replace("/*__CUES__*/", json.dumps(cues, ensure_ascii=False))
-html = html.replace("/*__VOCAB__*/", json.dumps(vocab, ensure_ascii=False))
 
 (ROOT / "index.html").write_text(html, encoding="utf-8")
-print(f"index.html собран: {len(cues)} реплик, {len(vocab)} словарных статей")
+print(f"index.html собран: {len(cues)} реплик")

@@ -222,6 +222,27 @@ button:focus-visible, [tabindex]:focus-visible {
   margin-top: 0.2rem;
   min-height: 1.1em;
 }
+/* Русская дорожка выключается целиком: остаются только английские субтитры,
+   и место под перевод не резервируется — строки сходятся плотнее. */
+.transcript[data-tr="off"] .cue-tr { display: none; }
+
+/* Пока перевод дотекает, у непереведённых строк вместо пустоты — бледный пульс,
+   иначе непонятно, сломалось оно или ещё считается. */
+.cue-tr:empty::after {
+  content: "";
+  display: block;
+  width: 42%;
+  height: 0.55em;
+  margin-top: 0.15em;
+  border-radius: 3px;
+  background: var(--surface-2);
+  animation: trPulse 1.4s ease-in-out infinite;
+}
+.transcript[data-tr="idle"] .cue-tr:empty::after { display: none; }
+@keyframes trPulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.9; } }
+@media (prefers-reduced-motion: reduce) { .cue-tr:empty::after { animation: none; } }
+
+.tr-status { font-size: 0.75rem; color: var(--text-mute); font-variant-numeric: tabular-nums; }
 .cue.active { background: var(--surface); }
 .cue.active .cue-time { color: var(--accent); }
 
@@ -271,6 +292,7 @@ button:focus-visible, [tabindex]:focus-visible {
 .lookup-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
 .lookup-word { font-size: 1.7rem; font-weight: 620; letter-spacing: -0.02em; font-family: var(--font-read); }
 .lookup-tr { font-size: 1.05rem; color: var(--accent); margin-top: 0.35rem; }
+.lookup-note { font-size: 0.86rem; color: var(--text-mute); margin-top: 0.3rem; line-height: 1.45; }
 .lookup-miss { font-size: 0.88rem; color: var(--text-mute); margin-top: 0.35rem; line-height: 1.45; }
 .context {
   margin-top: 1.1rem;
@@ -403,6 +425,8 @@ button:focus-visible, [tabindex]:focus-visible {
       <button class="btn-ghost" id="replayBtn" type="button" title="Переслушать текущую фразу">Переслушать фразу</button>
       <button class="btn-ghost" id="loopBtn" type="button" aria-pressed="false">Зациклить</button>
       <button class="btn-ghost" id="slowBtn" type="button" aria-pressed="false">0.75×</button>
+      <button class="btn-ghost" id="trBtn" type="button" aria-pressed="true">Русский</button>
+      <span class="tr-status" id="trStatus" role="status" aria-live="polite"></span>
       <div class="legend">
         <i>звучит сейчас</i>
         <i class="known">в колоде</i>
@@ -430,11 +454,11 @@ button:focus-visible, [tabindex]:focus-visible {
 
 <script>
 /* ============================================================
-   Данные: реальные реплики из json3 (пословный тайминг ASR YouTube)
-   и демо-словарь. В продакшене словарь заменяется запросом к API.
+   Данные: реальные реплики из json3 (пословный тайминг ASR YouTube).
+   Словаря здесь нет намеренно — и фразы, и отдельные слова переводит
+   Claude на бэкенде с оглядкой на контекст.
    ============================================================ */
 let CUES  = /*__CUES__*/;
-const VOCAB = /*__VOCAB__*/;
 let VIDEO_ID = "arj7oStGLkU";
 
 /* Адрес бэкенда. Он тянет субтитры произвольного видео по ссылке: в браузере это
@@ -507,22 +531,105 @@ function renderTranscript() {
   });
 }
 
-/* Вторая дорожка — готовый перевод фраз из файла data/translations/<videoId>.json.
+/* ---------- Вторая дорожка ----------
+   Перевод делает Claude на бэкенде, пачками по 40 строк с оглядкой на соседние.
    Склейка по словам («они затем что они») давала нечитаемый мусор и убрана:
-   субтитры рвут предложение посередине, переводить их можно только целиком
-   и с оглядкой на соседние строки. */
-let TRANSLATIONS = {};
+   субтитры рвут предложение посередине, переводить их можно только целиком.
 
-async function loadTranslations(videoId) {
-  TRANSLATIONS = {};
-  try {
-    const r = await fetch(`data/translations/${videoId}.json`, { cache: "no-cache" });
-    if (r.ok) TRANSLATIONS = await r.json();
-  } catch { /* перевода для этого видео пока нет — вторая дорожка будет пустой */ }
-}
+   Ответ приходит потоком (NDJSON), а не одним куском: у двухчасового подкаста
+   пачек полсотни, и ждать последнюю — значит минуту смотреть в пустой экран.
+   Каждая доехавшая пачка сразу проставляется в уже отрисованные строки. */
+let TRANSLATIONS = {};
+let trOn = localStorage.getItem("razbor.tr") !== "off";
+let trAbort = null;
 
 function translateCue(cue, i) {
   return TRANSLATIONS[i] || "";
+}
+
+function applyTrMode() {
+  document.getElementById("transcript").dataset.tr =
+    !trOn ? "off" : trAbort ? "loading" : "idle";
+  const b = document.getElementById("trBtn");
+  b.setAttribute("aria-pressed", String(trOn));
+  b.textContent = trOn ? "Русский" : "Только English";
+}
+
+function trStatus(text) {
+  document.getElementById("trStatus").textContent = text;
+}
+
+/* Проставляем перевод в уже нарисованные строки — без перерисовки всей расшифровки,
+   иначе на каждой пачке сбрасывалась бы караоке-подсветка и позиция скролла. */
+function paintTranslations(lines) {
+  for (const [i, text] of Object.entries(lines)) {
+    TRANSLATIONS[i] = text;
+    const el = document.querySelector(`.cue[data-i="${i}"] .cue-tr`);
+    if (el) el.textContent = text;
+  }
+}
+
+/**
+ * Тянет перевод для видео: сперва готовый из кэша, недостающее — переводит на лету.
+ * Прерываемо: при смене видео старый поток отменяется, иначе перевод предыдущего
+ * доедет и заляжет поверх нового.
+ */
+async function loadTranslations(videoId, texts) {
+  TRANSLATIONS = {};
+  trAbort?.abort();
+  const ac = (trAbort = new AbortController());
+
+  try {
+    const cached = await fetch(`${API}/api/translation/${videoId}`, { signal: ac.signal })
+      .then(r => (r.ok ? r.json() : { lines: {} }))
+      .catch(() => ({ lines: {} }));
+    if (ac.signal.aborted) return;
+    paintTranslations(cached.lines || {});
+
+    if (Object.keys(TRANSLATIONS).length >= texts.length) {
+      trStatus(""); applyTrMode(); return;
+    }
+
+    applyTrMode();
+    trStatus(`Перевожу… 0 / ${texts.length}`);
+    const res = await fetch(`${API}/api/translate-video`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ videoId, texts }),
+      signal: ac.signal,
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Ошибка ${res.status}`);
+
+    // NDJSON: один объект на строку. Хвост без \n держим в буфере до следующего чтения.
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split("\n");
+      buf = parts.pop();
+      for (const line of parts) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.lines) paintTranslations(msg.lines);
+        if (msg.error) toast(`Пачка не перевелась: ${msg.error}`);
+        // done === true только в финальном сообщении; в промежуточных это число
+        // переведённых строк — перепутать их значит потерять счётчик прогресса.
+        if (msg.done === true) trStatus("");
+        else if (msg.total) trStatus(`Перевожу… ${msg.done} / ${msg.total}`);
+      }
+    }
+    trStatus("");
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    trStatus("перевод недоступен");
+    toast(`Перевод не запустился: ${err.message}`);
+  } finally {
+    if (trAbort === ac) trAbort = null;
+    applyTrMode();
+  }
 }
 
 /* ---------- Караоке-подсветка ----------
@@ -585,22 +692,29 @@ function paintWords(ci, t) {
   });
 }
 
-/* ---------- Разбор слова ---------- */
+/* ---------- Разбор слова ----------
+   Слово переводит Claude с оглядкой на фразу, а не словарь: «plow through life» —
+   это не «пахать плугом», и словарной статьёй такое не берётся. Ответ кэшируем
+   по паре слово+фраза, чтобы повторный клик отвечал мгновенно. */
+const wordCache = new Map(JSON.parse(localStorage.getItem("razbor.words") || "[]"));
+const saveWords = () =>
+  localStorage.setItem("razbor.words", JSON.stringify([...wordCache].slice(-500)));
+
+const esc = s => String(s).replace(/[&<>"]/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
+
 function lookup(ci, wi) {
   const cue = CUES[ci], word = cue.words[wi].w, key = norm(word);
   selected = { key, word, ci, wi, cue };
   switchTab("lookup");
 
-  const tr = VOCAB[key];
-  const ctx = cue.words
-    .map((w, i) => (i === wi ? `<b>${w.w}</b>` : w.w))
-    .join(" ");
+  const ctx = cue.words.map((w, i) => (i === wi ? `<b>${esc(w.w)}</b>` : esc(w.w))).join(" ");
+  const cacheKey = `${key}|${cue.text}`;
+  const hit = wordCache.get(cacheKey);
 
   document.getElementById("panelLookup").innerHTML = `
-    <div class="lookup-head"><span class="lookup-word">${word}</span></div>
-    ${tr
-      ? `<div class="lookup-tr">${tr}</div>`
-      : `<div class="lookup-miss">Нет в демо-словаре. В рабочей версии здесь ответ переводчика с учётом контекста фразы.</div>`}
+    <div class="lookup-head"><span class="lookup-word">${esc(word)}</span></div>
+    <div class="lookup-tr" id="lookupTr">${hit ? esc(hit.tr) : "перевожу…"}</div>
+    <div class="lookup-note" id="lookupNote">${hit?.note ? esc(hit.note) : ""}</div>
     <div class="context">
       <span class="context-label">Как это звучит в видео · ${fmt(cue.start)}</span>
       <div class="context-text">${ctx}</div>
@@ -610,8 +724,35 @@ function lookup(ci, wi) {
       <button class="btn-ghost" id="ctxPlay" type="button">Переслушать</button>
     </div>`;
 
-  document.getElementById("saveBtn").onclick = () => addCard(key, word, tr, cue, wi);
   document.getElementById("ctxPlay").onclick = () => replay(cue);
+  // Сохранить можно и до ответа переводчика: карточка доберёт перевод, когда он придёт.
+  const saveBtn = document.getElementById("saveBtn");
+  saveBtn.onclick = () => addCard(key, word, wordCache.get(cacheKey)?.tr || "", cue, wi);
+  if (hit) return;
+
+  fetch(`${API}/api/word`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ word, context: cue.text }),
+  })
+    .then(r => r.json())
+    .then(res => {
+      if (res.error || !res.tr) throw new Error(res.error || "пустой ответ");
+      wordCache.set(cacheKey, { tr: res.tr, note: res.note });
+      saveWords();
+      // Панель могли уже переключить на другое слово — не затираем чужой разбор.
+      if (selected?.key !== key || selected?.ci !== ci) return;
+      document.getElementById("lookupTr").textContent = res.tr;
+      document.getElementById("lookupNote").textContent = res.note || "";
+      // Карточку, сохранённую до ответа, дозаполняем задним числом.
+      const card = deck.get(key);
+      if (card && !card.tr) { card.tr = res.tr; save(); renderDeck(); }
+    })
+    .catch(err => {
+      if (selected?.key !== key || selected?.ci !== ci) return;
+      const el = document.getElementById("lookupTr");
+      if (el) { el.textContent = "переводчик недоступен"; el.classList.add("lookup-miss"); }
+    });
 }
 
 function addCard(key, word, tr, cue, wi) {
@@ -691,7 +832,7 @@ function renderReview() {
     <div class="review-card">
       <div class="review-word">${c.word}</div>
       <div class="review-ctx">${ctx}</div>
-      ${revealed ? `<div class="review-answer">${c.tr || "нет перевода"}</div>` : ""}
+      ${revealed ? `<div class="review-answer">${esc(c.tr) || "перевожу…"}</div>` : ""}
       ${revealed
         ? `<div class="grade-row">
              <button class="grade" data-g="1" type="button">Забыл</button>
@@ -704,6 +845,27 @@ function renderReview() {
     <div class="lookup-actions"><button class="btn-ghost" id="revPlay" type="button">Послушать в видео</button></div>`;
 
   document.getElementById("revPlay").onclick = () => seek(c.at);
+  // Карточка без перевода (сохранена до ответа переводчика или из старой версии со
+  // словарём) добирает его прямо при показе — «нет перевода» больше не конечный диагноз.
+  if (revealed && !c.tr) {
+    fetch(`${API}/api/word`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ word: c.word, context: c.ctx }),
+    })
+      .then(r => r.json())
+      .then(res => {
+        if (!res.tr) return;
+        c.tr = res.tr;
+        save();
+        if (reviewKey === key && revealed) {
+          const el = box.querySelector(".review-answer");
+          if (el) el.textContent = res.tr;
+        }
+        renderDeck();
+      })
+      .catch(() => {});
+  }
   if (revealed) {
     box.querySelectorAll(".grade").forEach(b => {
       b.onclick = () => grade(key, parseInt(b.dataset.g, 10));
@@ -819,14 +981,21 @@ document.getElementById("urlForm").onsubmit = async e => {
     CUES = normalizeJson3(raw);
     if (!CUES.length) throw new Error("Дорожка пустая");
     VIDEO_ID = info.videoId;
-    await loadTranslations(VIDEO_ID);
-    const data = { cues: CUES, fromCache: info.fromCache };
     current = -1;
     loopCue = null;
+    // Сбрасываем ДО отрисовки: renderTranscript берёт перевод по номеру строки, и перевод
+    // прошлого видео молча лёг бы на новые реплики — ровно это и случилось на первом тесте.
+    trAbort?.abort();
+    trAbort = null;
+    TRANSLATIONS = {};
+    trStatus("");
+    applyTrMode();
     renderTranscript();
     renderDeck();
     if (ready) player.loadVideoById(VIDEO_ID);
-    toast(`Загружено реплик: ${CUES.length}${data.fromCache ? " (из кэша)" : ""}`);
+    toast(`Загружено реплик: ${CUES.length}${info.fromCache ? " (из кэша)" : ""}`);
+    // Перевод не ждём: строки уже на экране, русская дорожка дотекает поверх них.
+    loadTranslations(VIDEO_ID, CUES.map(c => c.text));
   } catch (err) {
     const unreachable = /Failed to fetch|NetworkError|aborted/i.test(err.message) || err.name === "AbortError";
     const httpsToLocal = location.protocol === "https:" && /^http:\/\/(localhost|127\.)/.test(API);
@@ -904,9 +1073,22 @@ document.addEventListener("keydown", e => {
 });
 
 /* ---------- Старт ---------- */
-loadTranslations(VIDEO_ID).then(renderTranscript);
+document.getElementById("trBtn").onclick = () => {
+  trOn = !trOn;
+  localStorage.setItem("razbor.tr", trOn ? "on" : "off");
+  applyTrMode();
+  toast(trOn ? "Перевод включён" : "Только английские субтитры");
+  // Выключили до конца перевода — доводить нечего, но и обрывать поток не надо:
+  // он допишется в кэш, и при следующем включении перевод будет уже готов.
+  if (trOn && !trAbort && Object.keys(TRANSLATIONS).length < CUES.length) {
+    loadTranslations(VIDEO_ID, CUES.map(c => c.text));
+  }
+};
+
 renderTranscript();
 renderDeck();
+applyTrMode();
+loadTranslations(VIDEO_ID, CUES.map(c => c.text));
 const tag = document.createElement("script");
 tag.src = "https://www.youtube.com/iframe_api";
 document.head.appendChild(tag);
