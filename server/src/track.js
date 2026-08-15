@@ -79,7 +79,21 @@ export async function getTracks(videoId) {
     videoId,
     title: data?.videoDetails?.title || '',
     tracks,
+    audioUrl: pickAudioUrl(data),
   }
+}
+
+/**
+ * Аудиодорожка для вырезания клипов фраз. У клиента ANDROID adaptiveFormats приходят
+ * с готовым url (без signatureCipher). Берём самый лёгкий AAC: для клипа с речью
+ * качества хватает, а по сети гоняется меньше.
+ */
+function pickAudioUrl(data) {
+  const formats = data?.streamingData?.adaptiveFormats || []
+  const audio = formats
+    .filter(f => f.mimeType?.startsWith('audio/mp4') && f.url)
+    .sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0))
+  return audio[0]?.url || null
 }
 
 /** json3 — единственный формат, где есть пословный тайминг (tOffsetMs). */

@@ -6,3 +6,6 @@ node_modules/
 # правилами не разрешено, в репозиторий идёт короткий демо-фрагмент.
 data/*.local.json
 data/cues_local.json
+data/clips/
+server/bin/ffmpeg
+server/deno.lock

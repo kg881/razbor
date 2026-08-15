@@ -359,6 +359,16 @@ button:focus-visible, [tabindex]:focus-visible {
   text-align: center;
 }
 .review-word { font-size: 2rem; font-weight: 620; font-family: var(--font-read); letter-spacing: -0.02em; }
+/* Вырезанный кусок видео с фразой — сердце карточки */
+.review-clip { margin-top: 0.9rem; }
+.review-clip video {
+  width: 100%;
+  max-height: 200px;
+  border-radius: 8px;
+  background: #000;
+  display: block;
+}
+.clip-miss { font-size: 0.8rem; color: var(--text-mute); padding: 0.6rem 0; }
 .review-ctx { margin-top: 1rem; font-size: 0.92rem; color: var(--text-soft); line-height: 1.5; font-family: var(--font-read); }
 .review-ctx b { color: var(--accent); }
 .review-answer { margin-top: 1rem; font-size: 1.15rem; color: var(--accent); }
@@ -761,7 +771,16 @@ function addCard(key, word, tr, cue, wi) {
     word, tr: tr || "",
     ctx: cue.words.map(w => w.w).join(" "),
     wi, at: cue.start, due: Date.now(), ease: 2.5, ivl: 0, reps: 0,
+    // Для видеофрагмента фразы: из какого видео и до какой секунды она звучит.
+    vid: VIDEO_ID, end: cue.end,
   });
+  // Кусок видео с фразой вырезается сразу при сохранении (~9 с на сервере):
+  // к повторению он уже лежит на диске и играет мгновенно, без загрузки подкаста.
+  fetch(`${API}/api/clip`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ videoId: VIDEO_ID, start: cue.start, end: cue.end }),
+  }).catch(() => { /* не вырезался — карточка сработает через перемотку плеера */ });
   save();
   document.querySelectorAll(".w").forEach(s => {
     if (norm(s.textContent) === key) s.classList.add("known");
@@ -814,6 +833,36 @@ function coverage() {
 }
 
 /* ---------- Повторение ---------- */
+/* Видеофрагмент фразы в карточке. Клип обычно уже вырезан при сохранении слова;
+   если нет (сервер был занят или карточка со старой сессии) — дорезаем на месте
+   и показываем состояние, а не пустую дыру. */
+function mountClip(c, box) {
+  const url = `${API}/api/clip`;
+  const put = src => {
+    box.innerHTML = "";
+    const v = document.createElement("video");
+    v.src = src;
+    v.controls = true;
+    v.playsInline = true;
+    v.preload = "auto";
+    box.appendChild(v);
+  };
+  fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ videoId: c.vid, start: c.at, end: c.end }),
+  })
+    .then(r => r.json())
+    .then(res => {
+      if (!res.url) throw new Error(res.error || "клип не вырезался");
+      put(`${API}${res.url}`);
+    })
+    .catch(() => {
+      box.innerHTML = `<div class="clip-miss">Кусок видео не вырезался — можно переслушать в плеере.</div>`;
+    });
+  box.innerHTML = `<div class="clip-miss">Вырезаю кусок видео…</div>`;
+}
+
 let reviewKey = null, revealed = false;
 function renderReview() {
   const box = document.getElementById("panelReview");
@@ -828,9 +877,15 @@ function renderReview() {
   reviewKey = key;
   const ctx = c.ctx.split(" ").map((w, i) => (i === c.wi ? `<b>${w}</b>` : w)).join(" ");
 
+  // Фраза в карточке — вырезанный кусок видео, не перемотка подкаста: в колоде
+  // фразы из разных видео, и грузить двухчасовое ради одной реплики нельзя.
+  // Старые карточки без vid откатываются на перемотку основного плеера.
+  const hasClip = !!c.vid;
+
   box.innerHTML = `
     <div class="review-card">
-      <div class="review-word">${c.word}</div>
+      <div class="review-word">${esc(c.word)}</div>
+      ${hasClip ? `<div class="review-clip" id="revClipBox"></div>` : ""}
       <div class="review-ctx">${ctx}</div>
       ${revealed ? `<div class="review-answer">${esc(c.tr) || "перевожу…"}</div>` : ""}
       ${revealed
@@ -842,9 +897,16 @@ function renderReview() {
            </div>`
         : `<div class="grade-row" style="grid-template-columns:1fr"><button class="grade" id="revealBtn" type="button">Показать перевод</button></div>`}
     </div>
-    <div class="lookup-actions"><button class="btn-ghost" id="revPlay" type="button">Послушать в видео</button></div>`;
+    <div class="lookup-actions">
+      <button class="btn-ghost" id="revPlay" type="button">${hasClip ? "Фраза ещё раз" : "Послушать в видео"}</button>
+    </div>`;
 
-  document.getElementById("revPlay").onclick = () => seek(c.at);
+  if (hasClip) mountClip(c, document.getElementById("revClipBox"));
+  document.getElementById("revPlay").onclick = () => {
+    const v = document.querySelector("#revClipBox video");
+    if (v) { v.currentTime = 0; v.play(); }
+    else seek(c.at);
+  };
   // Карточка без перевода (сохранена до ответа переводчика или из старой версии со
   // словарём) добирает его прямо при показе — «нет перевода» больше не конечный диагноз.
   if (revealed && !c.tr) {

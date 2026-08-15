@@ -19,6 +19,7 @@ import { normalizeJson3 } from './subtitles.js'
 import { fetchCues, parseVideoId } from './fetch-subs.js'
 import { getTracks, pickTrack } from './track.js'
 import { translateVideo, readCached, explainWord } from './translate-video.js'
+import { cutClip, readClip, clipName } from './clips.js'
 import { claudeAvailable } from './claude.js'
 import { LruTtlCache } from './cache.js'
 
@@ -180,6 +181,44 @@ app.post('/api/translate-video', async c => {
 app.get('/api/translation/:videoId', async c => {
   const lines = await readCached(c.req.param('videoId'))
   return lines ? c.json({ lines, count: Object.keys(lines).length }) : c.json({ lines: {}, count: 0 })
+})
+
+/**
+ * Вырезать клип фразы. Зовётся в момент сохранения карточки, чтобы к повторению
+ * кусок уже лежал на диске (~9 с на вырезку). Повторный вызов с теми же границами
+ * отвечает мгновенно готовым файлом.
+ */
+app.post('/api/clip', async c => {
+  const { videoId, start, end } = await c.req.json().catch(() => ({}))
+  if (!clipName(videoId || '', Number(start), Number(end))) {
+    return c.json({ error: 'Ожидается videoId и границы start/end в секундах.' }, 400)
+  }
+  try {
+    const name = await cutClip(videoId, Number(start), Number(end))
+    return c.json({ url: `/api/clips/${name}`, name })
+  } catch (e) {
+    return c.json({ error: e.message, code: e.code }, e.code === 'BAD_RANGE' ? 400 : 502)
+  }
+})
+
+/** Отдача готового клипа. Range обязателен: без него <video> в Safari молчит. */
+app.get('/api/clips/:name', async c => {
+  const res = await readClip(c.req.param('name'), c.req.header('range'))
+  if (!res) return c.json({ error: 'Клип не найден.' }, 404)
+  if (res.unsatisfiable) {
+    return c.newResponse(null, 416, { 'content-range': `bytes */${res.size}` })
+  }
+  const headers = {
+    'content-type': 'video/mp4',
+    'accept-ranges': 'bytes',
+    'cache-control': 'public, max-age=31536000, immutable',
+    'content-length': String(res.buf.length),
+  }
+  if (res.partial) {
+    headers['content-range'] = `bytes ${res.start}-${res.end}/${res.size}`
+    return c.newResponse(res.buf, 206, headers)
+  }
+  return c.newResponse(res.buf, 200, headers)
 })
 
 /** Разбор слова в контексте фразы — для карточки. */
