@@ -33,10 +33,16 @@ def main():
         p = ROOT / "data" / sub / f"{vid}.json"
         return json.loads(p.read_text("utf-8")) if p.exists() else {}
 
+    # Колода едет вместе с пакетом: на телефоне у страницы свой localStorage,
+    # и без снимка «Повторение» открылось бы пустым при полной колоде на компьютере.
+    deck_path = ROOT / "data" / "deck_snapshot.json"
+    deck = json.loads(deck_path.read_text("utf-8")) if deck_path.exists() else []
+
     offline = {
         "video": f"{vid}.mp4",
         "translations": load("translations"),
         "levels": load("levels"),
+        "deck": deck,
     }
 
     html = (ROOT / "template.html").read_text("utf-8")

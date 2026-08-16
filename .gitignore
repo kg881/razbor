@@ -12,3 +12,5 @@ server/deno.lock
 data/cues_*.json
 !data/cues_demo.json
 data/offline/
+data/anki/
+data/deck_snapshot.json

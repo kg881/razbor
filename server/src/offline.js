@@ -52,12 +52,12 @@ export async function offlineReady(videoId) {
  */
 export async function buildOffline(videoId) {
   if (!/^[\w-]{11}$/.test(videoId)) throw new Error('Некорректный videoId.')
-  if (await offlineReady(videoId)) {
-    jobs.set(videoId, { state: 'ready' })
-    return
-  }
   const running = jobs.get(videoId)
   if (running && (running.state === 'downloading' || running.state === 'building')) return
+  // Страницу пересобираем ВСЕГДА, даже если пакет уже есть: перевод, оценки уровня
+  // и снимок колоды с тех пор изменились. Пропускается только скачивание видео —
+  // вот оно и правда долгое. Раньше готовый пакет выходил отсюда сразу и уезжал
+  // на телефон с устаревшим содержимым.
 
   jobs.set(videoId, { state: 'downloading' })
   const dir = path.join(OFFLINE_DIR, videoId)

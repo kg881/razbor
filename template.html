@@ -285,8 +285,10 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
 .tabs { display: flex; border-bottom: 1px solid var(--line); flex: none; }
 .tab {
   flex: 1;
-  padding: 0.85rem 0.5rem;
-  font-size: 0.82rem;
+  min-width: 0;                 /* пять вкладок в 340px — иначе распирают колонку */
+  padding: 0.85rem 0.3rem;
+  font-size: 0.78rem;
+  white-space: nowrap;
   font-weight: 560;
   color: var(--text-mute);
   border-bottom: 2px solid transparent;
@@ -378,6 +380,74 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
   display: block;
 }
 .clip-miss { font-size: 0.8rem; color: var(--text-mute); padding: 0.6rem 0; }
+
+/* Клоз: фраза с пропуском на месте слова — вспоминаем в контексте, не изолированно */
+.review-cloze {
+  font-size: 1.15rem;
+  line-height: 1.6;
+  font-family: var(--font-read);
+  margin-bottom: 0.3rem;
+}
+.review-cloze .cloze {
+  border-bottom: 2px solid var(--accent);
+  color: var(--accent);
+  font-weight: 620;
+}
+.review-word.small { font-size: 1.35rem; margin-top: 0.5rem; }
+
+/* Диктант */
+.dict-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.5rem; margin-bottom: 0.6rem; font-size: 0.8rem; color: var(--text-mute);
+}
+.dict-input {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  font-family: var(--font-read);
+  padding: 0.7rem 0.8rem;
+  resize: vertical;
+}
+.dict-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+.dict-actions { display: flex; gap: 0.4rem; margin-top: 0.6rem; }
+.dict-actions .btn { flex: 1; }
+.dict-result:not(:empty) { margin-top: 0.8rem; }
+.dict-score { font-size: 1.4rem; font-weight: 640; color: var(--accent); }
+.dict-score[data-good="true"] { color: var(--known); }
+.dict-diff {
+  margin-top: 0.5rem; line-height: 1.9;
+  font-family: var(--font-read); font-size: 1.02rem;
+}
+/* Цвет здесь семантический, не акцентный: угадано / не то / пропущено / лишнее */
+.d-ok { color: var(--known); }
+.d-wrong { color: var(--accent); text-decoration: underline; }
+.d-got { color: var(--text-mute); font-size: 0.82em; }
+.d-got::before { content: "→"; margin: 0 0.15em; }
+.d-miss { color: var(--accent); background: var(--accent-soft); border-radius: 3px; padding: 0 3px; }
+.d-extra { color: var(--text-mute); text-decoration: line-through; }
+.dict-hint { font-size: 0.78rem; color: var(--text-mute); line-height: 1.5; margin-top: 0.9rem; }
+
+/* Прогресс */
+.chart-title { font-size: 0.78rem; color: var(--text-mute); margin: 1.1rem 0 0.5rem; }
+.chart {
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+  gap: 3px; align-items: end; height: 88px;
+}
+.bar-col { display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; }
+.bar { width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; }
+.bar-col span { font-size: 0.62rem; color: var(--text-mute); margin-top: 3px; font-variant-numeric: tabular-nums; }
+
+/* Библиотека видео */
+.lib-row {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 0.5rem 0; border-top: 1px solid var(--line);
+}
+.lib-open { text-align: left; font-size: 0.88rem; color: var(--text); line-height: 1.35; }
+.lib-open:hover { color: var(--accent); }
+.lib-meta { font-size: 0.72rem; color: var(--text-mute); }
 .review-ctx { margin-top: 1rem; font-size: 0.92rem; color: var(--text-soft); line-height: 1.5; font-family: var(--font-read); }
 .review-ctx b { color: var(--accent); }
 .review-answer { margin-top: 1rem; font-size: 1.15rem; color: var(--accent); }
@@ -451,6 +521,7 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
         <option value="B2">B2</option>
         <option value="C">B2+</option>
       </select>
+      <button class="btn-ghost" id="stepBtn" type="button" aria-pressed="false" title="Пауза после каждой реплики">По фразам</button>
       <button class="btn-ghost" id="offBtn" type="button" title="Скачать видео и страницу для офлайна">Офлайн</button>
       <span class="tr-status" id="trStatus" role="status" aria-live="polite"></span>
       <div class="legend">
@@ -468,10 +539,14 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
       <button class="tab" role="tab" aria-selected="true" data-tab="lookup">Слово</button>
       <button class="tab" role="tab" aria-selected="false" data-tab="deck">Колода</button>
       <button class="tab" role="tab" aria-selected="false" data-tab="review">Повторение</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="dictation">Диктант</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="stats">Прогресс</button>
     </div>
     <div class="panel" data-panel="lookup" data-open="true" id="panelLookup"></div>
     <div class="panel" data-panel="deck" id="panelDeck"></div>
     <div class="panel" data-panel="review" id="panelReview"></div>
+    <div class="panel" data-panel="dictation" id="panelDictation"></div>
+    <div class="panel" data-panel="stats" id="panelStats"></div>
   </aside>
 
 </div>
@@ -503,6 +578,7 @@ const API = new URLSearchParams(location.search).get("api")
 const deck = new Map(JSON.parse(localStorage.getItem("razbor.deck") || "[]"));
 let current = -1, selected = null, player = null, ready = false;
 let loopCue = null, slow = false, userScrolling = 0;
+let stepMode = localStorage.getItem("razbor.step") === "on", stepStopped = -1;
 
 const save = () => localStorage.setItem("razbor.deck", JSON.stringify([...deck]));
 const norm = w => w.toLowerCase().replace(/^[^\p{L}'-]+|[^\p{L}'-]+$/gu, "");
@@ -737,6 +813,8 @@ const P = {
                    else if (ready) { player.seekTo(t, true); player.playVideo(); } },
   toggle:  () => { if (P.local) { if (videoEl) videoEl.paused ? videoEl.play() : videoEl.pause(); }
                    else if (ready) { player.getPlayerState() === 1 ? player.pauseVideo() : player.playVideo(); } },
+  pause:   () => { if (P.local) videoEl?.pause(); else if (ready) player.pauseVideo(); },
+  play:    () => { if (P.local) videoEl?.play(); else if (ready) player.playVideo(); },
   rate:    r  => { if (P.local) { if (videoEl) videoEl.playbackRate = r; }
                    else if (ready) player.setPlaybackRate(r); },
   load:    v  => { if (!P.local && ready) player.loadVideoById(v); },
@@ -759,6 +837,17 @@ function tick() {
   document.getElementById("tc").textContent = fmt(t);
 
   if (loopCue && t > loopCue.end) { seek(loopCue.start); return; }
+
+  /* Режим «по фразам»: пауза на конце каждой реплики. Слушаешь → успеваешь понять →
+     пробел → дальше. Без паузы речь идёт сплошным потоком, и разбирать её некогда:
+     ухо ещё держит предыдущую фразу, а говорят уже следующую. */
+  if (stepMode && playing) {
+    const c = CUES[current];
+    if (c && t >= c.end - 0.05 && stepStopped !== current) {
+      stepStopped = current;
+      P.pause();
+    }
+  }
 
   const ci = findCue(t);
   if (ci !== current) {
@@ -890,6 +979,7 @@ function addCard(key, word, tr, cue, wi) {
     body: JSON.stringify({ videoId: VIDEO_ID, start: cue.start, end: cue.end }),
   }).catch(() => { /* не вырезался — карточка сработает через перемотку плеера */ });
   save();
+  logStat("added");
   document.querySelectorAll(".w").forEach(s => {
     if (norm(s.textContent) === key) s.classList.add("known");
   });
@@ -903,13 +993,43 @@ function addCard(key, word, tr, cue, wi) {
 function seek(t) { P.seek(t); }
 function replay(cue) { seek(cue.start); toast("Фраза с начала"); }
 
+/* ---------- Статистика ----------
+   Копим по дням: сколько слов добавлено, сколько повторов, сколько минут просмотра.
+   Хранится 90 дней — этого хватает на графики и не раздувает localStorage. */
+const stats = JSON.parse(localStorage.getItem("razbor.stats") || "{}");
+const today = () => new Date().toISOString().slice(0, 10);
+
+function logStat(kind, n = 1) {
+  const d = today();
+  const day = (stats[d] ||= { added: 0, review: 0, again: 0, sec: 0 });
+  day[kind] = (day[kind] || 0) + n;
+  // Держим окно в 90 дней, иначе за год накопится мусор
+  const keys = Object.keys(stats).sort();
+  while (keys.length > 90) delete stats[keys.shift()];
+  localStorage.setItem("razbor.stats", JSON.stringify(stats));
+}
+
+/* Минуты просмотра: тикаем раз в 15 секунд, пока видео реально играет. */
+setInterval(() => { if (P.playing()) logStat("sec", 15); }, 15000);
+
+function lastDays(n) {
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 864e5).toISOString().slice(0, 10);
+    out.push({ d, ...(stats[d] || { added: 0, review: 0, again: 0, sec: 0 }) });
+  }
+  return out;
+}
+
 /* ---------- Колода ---------- */
 function renderDeck() {
   const box = document.getElementById("panelDeck");
   if (!deck.size) {
     box.innerHTML = `<div class="empty">
       <div class="empty-title">Колода пуста</div>
-      <p>Нажми любое слово в расшифровке, чтобы посмотреть перевод и сохранить его вместе с фразой из видео.</p></div>`;
+      <p>Нажми любое слово в расшифровке, чтобы посмотреть перевод и сохранить его вместе с фразой из видео.</p></div>
+      <div id="libBox"></div>`;
+    renderLibrary();
     return;
   }
   const due = [...deck.values()].filter(c => c.due <= Date.now()).length;
@@ -925,10 +1045,81 @@ function renderDeck() {
       <div class="stat"><b>${deck.size}</b><span>всего</span></div>
       <div class="stat"><b>${due}</b><span>к повтору</span></div>
       <div class="stat"><b>${coverage()}%</b><span>понятно</span></div>
-    </div>${rows}`;
+    </div>
+    <div class="lookup-actions">
+      <button class="btn-ghost" id="ankiBtn" type="button">В Anki</button>
+    </div>${rows}
+    <div id="libBox"></div>`;
 
   box.querySelectorAll(".card-jump").forEach(b => {
     b.onclick = () => seek(parseFloat(b.dataset.at));
+  });
+  // Покрытие пересчитываем при показе колоды: оно растёт по мере сохранения слов
+  if (library[VIDEO_ID]) noteVideo(VIDEO_ID, null, { cov: coverage() });
+  renderLibrary();
+
+  // Экспорт в Anki: карточки уезжают с теми же видеофрагментами, что и здесь
+  document.getElementById("ankiBtn").onclick = async e => {
+    const btn = e.currentTarget;
+    if (OFFLINE) { toast("Экспорт доступен только онлайн"); return; }
+    btn.textContent = "Собираю…";
+    btn.disabled = true;
+    try {
+      const res = await fetch(`${API}/api/anki`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([...deck.entries()]),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "не собралось");
+      // Скачиваем сразу: пользователю нужен файл, а не ссылка на него
+      const a = document.createElement("a");
+      a.href = `${API}${data.url}`;
+      a.download = "razbor.apkg";
+      a.click();
+      toast(data.info || "Колода собрана");
+    } catch (err) {
+      toast(`Anki: ${err.message}`);
+    } finally {
+      btn.textContent = "В Anki";
+      btn.disabled = false;
+    }
+  };
+}
+
+/* ---------- Библиотека видео ----------
+   История открытого с прогрессом и покрытием: зная, сколько слов видео уже
+   в колоде, видно, какое смотреть следующим — это и есть подбор по i+1. */
+const library = JSON.parse(localStorage.getItem("razbor.library") || "{}");
+
+function noteVideo(vid, title, extra = {}) {
+  library[vid] = {
+    ...library[vid],
+    title: title || library[vid]?.title || vid,
+    // Число реплик берём только у открытого сейчас видео: для любого другого
+    // CUES относится к чужому видео и записал бы ему чужую длину.
+    ...(vid === VIDEO_ID ? { cues: CUES.length } : {}),
+    seen: Date.now(),
+    ...extra,
+  };
+  localStorage.setItem("razbor.library", JSON.stringify(library));
+}
+
+function renderLibrary() {
+  const box = document.getElementById("libBox");
+  if (!box) return;
+  const items = Object.entries(library).sort((a, b) => b[1].seen - a[1].seen).slice(0, 12);
+  if (!items.length) { box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="chart-title">Недавние видео</div>` + items.map(([vid, v]) => `
+    <div class="lib-row">
+      <button class="lib-open" type="button" data-vid="${vid}">${esc(v.title).slice(0, 52)}</button>
+      <span class="lib-meta">${v.cues || "?"} реплик${v.cov != null ? ` · понятно ${v.cov}%` : ""}</span>
+    </div>`).join("");
+  box.querySelectorAll(".lib-open").forEach(b => {
+    b.onclick = () => {
+      document.getElementById("urlInput").value = `https://youtu.be/${b.dataset.vid}`;
+      document.getElementById("urlForm").dispatchEvent(new Event("submit", { cancelable: true }));
+    };
   });
 }
 
@@ -945,6 +1136,16 @@ function coverage() {
    если нет (сервер был занят или карточка со старой сессии) — дорезаем на месте
    и показываем состояние, а не пустую дыру. */
 function mountClip(c, box) {
+  // Офлайн клипы с сервера недоступны, но полное видео лежит рядом — играем
+  // нужный отрезок из него медиафрагментом #t=начало,конец.
+  if (OFFLINE) {
+    box.innerHTML = "";
+    const v = document.createElement("video");
+    v.src = `${OFFLINE.video}#t=${Math.max(0, c.at - 0.25)},${(c.end ?? c.at + 4) + 0.35}`;
+    v.controls = true; v.playsInline = true; v.preload = "metadata";
+    box.appendChild(v);
+    return;
+  }
   const url = `${API}/api/clip`;
   const put = src => {
     box.innerHTML = "";
@@ -972,6 +1173,7 @@ function mountClip(c, box) {
 }
 
 let reviewKey = null, revealed = false;
+let clozeMode = localStorage.getItem("razbor.cloze") !== "off";
 function renderReview() {
   const box = document.getElementById("panelReview");
   const dueCards = [...deck.entries()].filter(([, c]) => c.due <= Date.now());
@@ -990,11 +1192,21 @@ function renderReview() {
   // Старые карточки без vid откатываются на перемотку основного плеера.
   const hasClip = !!c.vid;
 
+  // Клоз: вместо «слово → перевод» показываем фразу с пропуском на месте слова.
+  // Вспоминание в контексте прочнее изолированного: слово всплывает вместе с
+  // конструкцией, в которой живёт, а не как строчка словаря.
+  const clozeCtx = c.ctx.split(" ")
+    .map((w, i) => (i === c.wi ? `<span class="cloze">${revealed ? esc(w) : "&nbsp;".repeat(Math.max(4, w.length))}</span>` : esc(w)))
+    .join(" ");
+
   box.innerHTML = `
     <div class="review-card">
-      <div class="review-word">${esc(c.word)}</div>
+      ${clozeMode
+        ? `<div class="review-cloze">${clozeCtx}</div>
+           ${revealed ? `<div class="review-word small">${esc(c.word)}</div>` : ""}`
+        : `<div class="review-word">${esc(c.word)}</div>`}
       ${hasClip ? `<div class="review-clip" id="revClipBox"></div>` : ""}
-      <div class="review-ctx">${ctx}</div>
+      ${clozeMode ? "" : `<div class="review-ctx">${ctx}</div>`}
       ${revealed ? `<div class="review-answer">${esc(c.tr) || "перевожу…"}</div>` : ""}
       ${revealed
         ? `<div class="grade-row">
@@ -1003,11 +1215,19 @@ function renderReview() {
              <button class="grade" data-g="3" type="button">Норм</button>
              <button class="grade" data-g="4" type="button">Легко</button>
            </div>`
-        : `<div class="grade-row" style="grid-template-columns:1fr"><button class="grade" id="revealBtn" type="button">Показать перевод</button></div>`}
+        : `<div class="grade-row" style="grid-template-columns:1fr"><button class="grade" id="revealBtn" type="button">${clozeMode ? "Показать слово" : "Показать перевод"}</button></div>`}
     </div>
     <div class="lookup-actions">
       <button class="btn-ghost" id="revPlay" type="button">${hasClip ? "Фраза ещё раз" : "Послушать в видео"}</button>
+      <button class="btn-ghost" id="clozeBtn" type="button" aria-pressed="${clozeMode}">Клоз</button>
     </div>`;
+
+  document.getElementById("clozeBtn").onclick = () => {
+    clozeMode = !clozeMode;
+    localStorage.setItem("razbor.cloze", clozeMode ? "on" : "off");
+    renderReview();
+    toast(clozeMode ? "Пропуск во фразе" : "Слово и перевод");
+  };
 
   if (hasClip) mountClip(c, document.getElementById("revClipBox"));
   document.getElementById("revPlay").onclick = () => {
@@ -1045,21 +1265,224 @@ function renderReview() {
   }
 }
 
-/* Интервальное повторение. В продакшене — библиотека FSRS;
-   здесь упрощённый вариант, чтобы цикл был рабочим целиком. */
+/* ---------- Интервальное повторение: FSRS-4.5 ----------
+   Раньше здесь был упрощённый SM-2 (интервал × «лёгкость»). Заменён на FSRS,
+   потому что SM-2 меряет карточку одним числом, а FSRS — двумя независимыми:
+
+     S (stability)   — через сколько дней вспоминаемость упадёт до 90%;
+     D (difficulty)  — насколько эта карточка тяжела лично тебе, 1..10.
+
+   Разделение и даёт выигрыш: тяжёлое слово получает короткие интервалы, не
+   ломая длинные у лёгких, а «Забыл» не обнуляет накопленную стабильность —
+   она падает, но помнит прошлое. Веса — опубликованные дефолтные FSRS-4.5.
+
+   Оценки: 1 Забыл, 2 Трудно, 3 Норм, 4 Легко. */
+const FSRS_W = [0.4872, 1.4003, 3.7145, 13.8206, 5.1618, 1.2298, 0.8975, 0.031,
+  1.6474, 0.1367, 1.0461, 2.1072, 0.0793, 0.3246, 1.587, 0.2272, 2.8755];
+const FSRS_RETENTION = 0.9;   // целевая вероятность вспомнить в момент показа
+const FSRS_DECAY = -0.5, FSRS_F = 19 / 81;
+
+const clampD = d => Math.min(10, Math.max(1, d));
+const clampS = s => Math.min(36500, Math.max(0.01, s));
+
+/** Интервал в днях, на котором вспоминаемость упадёт до целевой. */
+function fsrsInterval(S) {
+  return Math.max(1, Math.round((S / FSRS_F) * (Math.pow(FSRS_RETENTION, 1 / FSRS_DECAY) - 1)));
+}
+
+/** Вспоминаемость карточки сейчас — нужна и для расчёта, и для статистики. */
+function fsrsRetrievability(c, now = Date.now()) {
+  if (!c.S || !c.lastRev) return 1;
+  const t = Math.max(0, (now - c.lastRev) / 864e5);
+  return Math.pow(1 + FSRS_F * (t / c.S), FSRS_DECAY);
+}
+
+function fsrsNext(c, g, now = Date.now()) {
+  const w = FSRS_W;
+  // Первое повторение: S и D берутся из начальных весов, а не пересчитываются.
+  // Формула D₀ здесь ЛИНЕЙНАЯ — это FSRS-4.5. Экспоненциальный вариант из FSRS-5
+  // с этими весами схлопывает D в минимум на любой оценке выше «Забыл»
+  // (5.16 - e^2.46 + 1 ≈ -5.5), и сложность перестаёт что-либо значить.
+  if (!c.S) {
+    return {
+      S: clampS(w[g - 1]),
+      D: clampD(w[4] - (g - 3) * w[5]),
+    };
+  }
+  const R = fsrsRetrievability(c, now);
+  const D = clampD(
+    // возврат к среднему: без него сложность дрейфует в крайности за десяток повторов.
+    // Цель возврата — D₀ для оценки «Норм», то есть просто w[4].
+    w[7] * w[4] + (1 - w[7]) * (c.D - w[6] * (g - 3)));
+
+  let S;
+  if (g === 1) {
+    // Провал: стабильность падает, но не обнуляется — прошлые повторы не пропадают
+    S = clampS(Math.min(
+      w[11] * Math.pow(c.D, -w[12]) * (Math.pow(c.S + 1, w[13]) - 1) * Math.exp(w[14] * (1 - R)),
+      c.S));
+  } else {
+    const hard = g === 2 ? w[15] : 1;
+    const easy = g === 4 ? w[16] : 1;
+    S = clampS(c.S * (1 + Math.exp(w[8]) * (11 - D) * Math.pow(c.S, -w[9]) *
+      (Math.exp(w[10] * (1 - R)) - 1) * hard * easy));
+  }
+  return { S, D };
+}
+
 function grade(key, g) {
   const c = deck.get(key);
-  if (g === 1) { c.ivl = 0; c.ease = Math.max(1.3, c.ease - 0.2); }
-  else {
-    c.reps++;
-    c.ivl = c.ivl === 0 ? 1 : Math.round(c.ivl * c.ease * (g === 2 ? 0.6 : g === 4 ? 1.3 : 1));
-    c.ease = Math.min(3.2, c.ease + (g === 4 ? 0.15 : g === 2 ? -0.15 : 0));
-  }
-  c.due = Date.now() + Math.max(c.ivl, 0.007) * 864e5;
+  const now = Date.now();
+  const { S, D } = fsrsNext(c, g, now);
+  c.S = S; c.D = D; c.lastRev = now;
+  c.reps = (c.reps || 0) + 1;
+  if (g === 1) c.lapses = (c.lapses || 0) + 1;
+
+  // «Забыл» и «Трудно» возвращают карточку в ту же сессию: интервал в днях
+  // на непонятом слове бессмыслен, его надо доучить сейчас.
+  const ivl = g === 1 ? 0 : fsrsInterval(S);
+  c.ivl = ivl;
+  c.due = now + (g === 1 ? 6e5 : g === 2 && ivl <= 1 ? 18e5 : ivl * 864e5);
+
   deck.set(key, c); save();
+  logStat(g === 1 ? "again" : "review");
   revealed = false;
   renderReview(); renderDeck();
-  toast(c.ivl ? `Следующий показ через ${c.ivl} дн.` : "Вернётся сегодня");
+  toast(ivl ? `Следующий показ через ${plural(ivl, "день", "дня", "дней")}` : "Вернётся через 10 минут");
+}
+
+/** 1 день / 2 дня / 5 дней — иначе «через 2 день» режет глаз. */
+function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  const word = a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many;
+  return `${n} ${word}`;
+}
+
+/* ---------- Диктант ----------
+   Реплика играет, ты печатаешь на слух, показываем расхождения пословно.
+   Тренирует именно аудирование: чтение субтитров его подменяет — глаз успевает
+   раньше уха, и на слух текст так и не расшифровывается. */
+let dictIdx = 0, dictChecked = false;
+
+/** Сравнение по словам без учёта регистра и пунктуации: важно услышанное слово. */
+function diffWords(userText, refText) {
+  const clean = s => s.toLowerCase().replace(/[^\p{L}\p{N}'\s-]/gu, "").split(/\s+/).filter(Boolean);
+  const a = clean(userText), b = clean(refText);
+
+  // Расстояние редактирования по словам, чтобы пропуск слова не сдвигал всё дальше
+  const n = a.length, m = b.length;
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = 0; i <= n; i++) dp[i][0] = i;
+  for (let j = 0; j <= m; j++) dp[0][j] = j;
+  for (let i = 1; i <= n; i++)
+    for (let j = 1; j <= m; j++)
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+
+  // Обратный проход: восстанавливаем, что совпало, что заменено, что пропущено
+  const out = [];
+  let i = n, j = m;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) { out.unshift({ t: "ok", w: b[j - 1] }); i--; j--; }
+    else if (i > 0 && j > 0 && dp[i][j] === dp[i - 1][j - 1] + 1) { out.unshift({ t: "wrong", w: b[j - 1], got: a[i - 1] }); i--; j--; }
+    else if (j > 0 && dp[i][j] === dp[i][j - 1] + 1) { out.unshift({ t: "miss", w: b[j - 1] }); j--; }
+    else { out.unshift({ t: "extra", w: a[i - 1] }); i--; }
+  }
+  const hit = out.filter(x => x.t === "ok").length;
+  return { parts: out, score: m ? Math.round((hit / m) * 100) : 0 };
+}
+
+function renderDictation() {
+  const box = document.getElementById("panelDictation");
+  if (!CUES.length) { box.innerHTML = `<div class="empty"><div class="empty-title">Нет реплик</div></div>`; return; }
+  dictIdx = Math.min(Math.max(0, dictIdx), CUES.length - 1);
+  const cue = CUES[dictIdx];
+
+  box.innerHTML = `
+    <div class="dict-head">
+      <span>Реплика ${dictIdx + 1} из ${CUES.length}</span>
+      <button class="btn-ghost" id="dictPlay" type="button">Слушать</button>
+    </div>
+    <textarea class="dict-input" id="dictInput" rows="3" placeholder="Напиши, что услышал…"
+      autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+    <div class="dict-result" id="dictResult"></div>
+    <div class="dict-actions">
+      <button class="btn" id="dictCheck" type="button">Проверить</button>
+      <button class="btn-ghost" id="dictPrev" type="button">←</button>
+      <button class="btn-ghost" id="dictNext" type="button">→</button>
+    </div>
+    <p class="dict-hint">Enter — проверить, затем → к следующей. Реплика играет из видео,
+    подглядывать в расшифровку смысла нет.</p>`;
+
+  const input = document.getElementById("dictInput");
+  const result = document.getElementById("dictResult");
+  dictChecked = false;
+
+  const play = () => replay(cue);
+  const check = () => {
+    const { parts, score } = diffWords(input.value, cue.text);
+    dictChecked = true;
+    result.innerHTML = `
+      <div class="dict-score" data-good="${score >= 80}">${score}% слов</div>
+      <div class="dict-diff">${parts.map(p =>
+        p.t === "ok" ? `<span class="d-ok">${esc(p.w)}</span>`
+        : p.t === "wrong" ? `<span class="d-wrong">${esc(p.w)}</span><span class="d-got">${esc(p.got)}</span>`
+        : p.t === "miss" ? `<span class="d-miss">${esc(p.w)}</span>`
+        : `<span class="d-extra">${esc(p.w)}</span>`).join(" ")}</div>`;
+    logStat("review");
+  };
+
+  document.getElementById("dictPlay").onclick = play;
+  document.getElementById("dictCheck").onclick = check;
+  document.getElementById("dictPrev").onclick = () => { dictIdx--; renderDictation(); };
+  document.getElementById("dictNext").onclick = () => { dictIdx++; renderDictation(); };
+  input.onkeydown = e => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      // Первый Enter проверяет, второй — уводит дальше: набирать не отрывая рук
+      if (dictChecked) { dictIdx++; renderDictation(); } else check();
+    }
+  };
+  input.focus();
+  play();
+}
+
+/* ---------- Прогресс ---------- */
+function renderStats() {
+  const box = document.getElementById("panelStats");
+  const days = lastDays(14);
+  const max = Math.max(1, ...days.map(d => d.added + d.review));
+  const week = lastDays(7).reduce((a, d) => ({
+    added: a.added + d.added, review: a.review + d.review, sec: a.sec + d.sec,
+  }), { added: 0, review: 0, sec: 0 });
+
+  // Средняя вспоминаемость колоды — честный ответ на «сколько я реально помню»
+  const cards = [...deck.values()];
+  const recall = cards.length
+    ? Math.round(cards.reduce((s, c) => s + fsrsRetrievability(c), 0) / cards.length * 100) : 0;
+  const mature = cards.filter(c => (c.ivl || 0) >= 21).length;
+
+  box.innerHTML = `
+    <div class="deck-stats">
+      <div class="stat"><b>${week.added}</b><span>слов за неделю</span></div>
+      <div class="stat"><b>${week.review}</b><span>повторов</span></div>
+      <div class="stat"><b>${Math.round(week.sec / 60)}</b><span>минут видео</span></div>
+    </div>
+    <div class="deck-stats">
+      <div class="stat"><b>${recall}%</b><span>помню сейчас</span></div>
+      <div class="stat"><b>${mature}</b><span>выучено прочно</span></div>
+      <div class="stat"><b>${coverage()}%</b><span>понятно в видео</span></div>
+    </div>
+    <div class="chart-title">Активность за 14 дней</div>
+    <div class="chart">${days.map(d => {
+      const h = Math.round(((d.added + d.review) / max) * 100);
+      const label = new Date(d.d).toLocaleDateString("ru", { day: "numeric", month: "short" });
+      return `<div class="bar-col" title="${label}: +${d.added} слов, ${d.review} повторов">
+        <div class="bar" style="height:${Math.max(2, h)}%"></div>
+        <span>${d.d.slice(8)}</span></div>`;
+    }).join("")}</div>
+    <p class="dict-hint">«Помню сейчас» — средняя вспоминаемость колоды по FSRS.
+    «Выучено прочно» — карточки с интервалом от трёх недель.</p>`;
 }
 
 /* ---------- Вкладки ---------- */
@@ -1070,6 +1493,8 @@ function switchTab(name) {
     p.dataset.open = String(p.dataset.panel === name));
   if (name === "deck") renderDeck();
   if (name === "review") { revealed = false; renderReview(); }
+  if (name === "dictation") renderDictation();
+  if (name === "stats") renderStats();
 }
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => switchTab(t.dataset.tab));
 
@@ -1181,6 +1606,7 @@ document.getElementById("urlForm").onsubmit = async e => {
     renderTranscript();
     renderDeck();
     P.load(VIDEO_ID);
+    noteVideo(VIDEO_ID, info.title, { cov: coverage() });
     toast(`Загружено реплик: ${CUES.length}${info.fromCache ? " (из кэша)" : ""}`);
     // Перевод и уровни не ждём: строки уже на экране, остальное дотекает поверх.
     loadTranslations(VIDEO_ID, CUES.map(c => c.text));
@@ -1261,7 +1687,15 @@ document.getElementById("transcript").addEventListener("scroll", () => { userScr
 
 document.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
-  if (e.code === "Space") { e.preventDefault(); P.toggle(); }
+  if (e.code === "Space") {
+    e.preventDefault();
+    // В режиме «по фразам» пробел на паузе ведёт к следующей реплике, а не просто
+    // снимает паузу: иначе плеер тут же упрётся в тот же конец фразы и встанет.
+    if (stepMode && !P.playing() && stepStopped >= 0 && stepStopped < CUES.length - 1) {
+      stepStopped = -1;
+      seek(CUES[current + 1]?.start ?? P.time());
+    } else P.toggle();
+  }
   if (e.key === "ArrowLeft" && current > 0) seek(CUES[current - 1].start);
   if (e.key === "ArrowRight" && current < CUES.length - 1) seek(CUES[current + 1].start);
   if (e.key.toLowerCase() === "r") { const c = CUES[current]; c && replay(c); }
@@ -1278,6 +1712,15 @@ document.getElementById("trBtn").onclick = () => {
   if (trOn && !trAbort && Object.keys(TRANSLATIONS).length < CUES.length) {
     loadTranslations(VIDEO_ID, CUES.map(c => c.text));
   }
+};
+
+/* Режим «по фразам»: пауза на конце реплики, пробел — дальше. */
+document.getElementById("stepBtn").onclick = e => {
+  stepMode = !stepMode;
+  stepStopped = -1;
+  localStorage.setItem("razbor.step", stepMode ? "on" : "off");
+  e.currentTarget.setAttribute("aria-pressed", String(stepMode));
+  toast(stepMode ? "Пауза после каждой фразы — пробел дальше" : "Обычное воспроизведение");
 };
 
 /* Уровень: селектор в панели, выбор переживает перезагрузку. */
@@ -1303,7 +1746,7 @@ document.getElementById("offBtn").onclick = async e => {
       await fetch(`${API}/api/offline`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ videoId: VIDEO_ID }),
+        body: JSON.stringify({ videoId: VIDEO_ID, deck: [...deck.entries()] }),
       });
       toast("Качаю видео — на длинном подкасте это минуты");
       for (;;) {
@@ -1339,6 +1782,12 @@ if (OFFLINE) {
   // Пакет автономен: перевод и уровни зашиты при сборке, сети нет.
   TRANSLATIONS = OFFLINE.translations || {};
   LEVELS = OFFLINE.levels || {};
+  // Снимок колоды из пакета подхватываем только в пустую: на телефоне могли
+  // уже наработать своё, и затирать это снимком с компьютера нельзя.
+  if (!deck.size && OFFLINE.deck?.length) {
+    for (const [k, c] of OFFLINE.deck) deck.set(k, c);
+    save();
+  }
   paintTranslations(TRANSLATIONS);
   applyLevelFilter();
   document.getElementById("trStatus").textContent = "";

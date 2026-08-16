@@ -276,8 +276,18 @@ app.get('/api/levels/:videoId', async c => {
  * POST запускает сборку (идемпотентно), GET status — опрос, GET files — отдача.
  */
 app.post('/api/offline', async c => {
-  const { videoId } = await c.req.json().catch(() => ({}))
+  const { videoId, deck } = await c.req.json().catch(() => ({}))
   if (!/^[\w-]{11}$/.test(videoId || '')) return c.json({ error: 'Ожидается videoId.' }, 400)
+  // Колода едет в пакет: у страницы на телефоне свой localStorage, и без этого
+  // «Повторение» там открывалось бы пустым, хотя слова давно набраны.
+  if (Array.isArray(deck)) {
+    const { default: fs } = await import('node:fs/promises')
+    const { default: path } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+    await fs.mkdir(path.join(root, 'data'), { recursive: true })
+    await fs.writeFile(path.join(root, 'data', 'deck_snapshot.json'), JSON.stringify(deck), 'utf8')
+  }
   buildOffline(videoId)   // работает в фоне, статус — отдельной ручкой
   return c.json({ started: true })
 })
@@ -345,6 +355,52 @@ app.get('/api/clips/:name', async c => {
     return c.newResponse(res.buf, 206, headers)
   }
   return c.newResponse(res.buf, 200, headers)
+})
+
+/**
+ * Экспорт колоды в Anki. Клиент шлёт карточки из localStorage, python собирает .apkg
+ * с вырезанными видеофрагментами (они уже лежат в data/clips с момента сохранения слова).
+ */
+app.post('/api/anki', async c => {
+  const cards = await c.req.json().catch(() => null)
+  if (!Array.isArray(cards) || !cards.length) {
+    return c.json({ error: 'Ожидается непустой массив карточек.' }, 400)
+  }
+  const { default: fs } = await import('node:fs/promises')
+  const { default: path } = await import('node:path')
+  const { default: os } = await import('node:os')
+  const { fileURLToPath } = await import('node:url')
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const run = promisify(execFile)
+
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+  const tmp = path.join(os.tmpdir(), `razbor_deck_${Date.now()}.json`)
+  try {
+    await fs.writeFile(tmp, JSON.stringify(cards), 'utf8')
+    const { stdout } = await run('python3', [path.join(root, 'tools', 'export_anki.py'), tmp],
+      { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 })
+    return c.json({ url: '/api/anki/razbor.apkg', info: stdout.trim() })
+  } catch (e) {
+    return c.json({ error: String(e.stderr || e.message).slice(-300) }, 502)
+  } finally {
+    await fs.rm(tmp, { force: true })
+  }
+})
+
+app.get('/api/anki/:name', async c => {
+  const name = c.req.param('name')
+  if (!/^[\w.-]+\.apkg$/.test(name)) return c.json({ error: 'Не найдено.' }, 404)
+  const { default: fs } = await import('node:fs/promises')
+  const { default: path } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+  const buf = await fs.readFile(path.join(root, 'data', 'anki', name)).catch(() => null)
+  if (!buf) return c.json({ error: 'Не найдено.' }, 404)
+  return c.newResponse(buf, 200, {
+    'content-type': 'application/octet-stream',
+    'content-disposition': `attachment; filename="${name}"`,
+  })
 })
 
 /** Разбор слова в контексте фразы — для карточки. */
