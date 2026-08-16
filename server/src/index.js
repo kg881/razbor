@@ -19,6 +19,8 @@ import { normalizeJson3 } from './subtitles.js'
 import { fetchCues, parseVideoId } from './fetch-subs.js'
 import { getTracks, pickTrack } from './track.js'
 import { translateVideo, readCached, explainWord } from './translate-video.js'
+import { gradeVideo, readLevels } from './levels.js'
+import { buildOffline, offlineStatus, offlineReady, streamOffline } from './offline.js'
 import { cutClip, readClip, clipName } from './clips.js'
 import { claudeAvailable } from './claude.js'
 import { LruTtlCache } from './cache.js'
@@ -43,6 +45,26 @@ app.post('/api/cues', async c => {
   }
   const cues = normalizeJson3(body)
   return c.json({ cues, count: cues.length })
+})
+
+/**
+ * Клиент качает субтитры сам (основной путь) — сервер их не видит. Но офлайн-пакету
+ * нужны реплики с пословным таймингом, поэтому клиент присылает их сюда после
+ * нормализации. Идемпотентно: файл на месте — ничего не делаем.
+ */
+app.post('/api/cues-store', async c => {
+  const { videoId, cues } = await c.req.json().catch(() => ({}))
+  if (!/^[\w-]{11}$/.test(videoId || '') || !Array.isArray(cues) || !cues.length) {
+    return c.json({ error: 'Ожидается videoId и cues.' }, 400)
+  }
+  const { default: fs } = await import('node:fs/promises')
+  const { default: path } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+  const fp = path.join(root, 'data', `cues_${videoId}.json`)
+  const exists = await fs.access(fp).then(() => true, () => false)
+  if (!exists) await fs.writeFile(fp, JSON.stringify(cues), 'utf8')
+  return c.json({ stored: !exists })
 })
 
 // Реплики кэшируем на 30 дней: повторное открытие того же видео не дёргает YouTube.
@@ -181,6 +203,110 @@ app.post('/api/translate-video', async c => {
 app.get('/api/translation/:videoId', async c => {
   const lines = await readCached(c.req.param('videoId'))
   return lines ? c.json({ lines, count: Object.keys(lines).length }) : c.json({ lines: {}, count: 0 })
+})
+
+/**
+ * Оценка сложности реплик по CEFR — тот же реестр задач и NDJSON-поток, что у перевода.
+ * Одно видео = одна задача; обрыв клиента её не убивает, результат ложится в кэш.
+ */
+const levelJobs = new Map()
+
+function startLevelJob(videoId, texts) {
+  const existing = levelJobs.get(videoId)
+  if (existing) return existing
+  const job = { lines: {}, done: 0, total: texts.length, listeners: new Set(), finished: false }
+  levelJobs.set(videoId, job)
+  ;(async () => {
+    try {
+      for await (const chunk of gradeVideo(videoId, texts)) {
+        Object.assign(job.lines, chunk.lines)
+        job.done = chunk.done
+        for (const fn of job.listeners) fn(chunk)
+      }
+    } catch (e) {
+      for (const fn of job.listeners) fn({ error: e.message })
+    } finally {
+      job.finished = true
+      for (const fn of job.listeners) fn({ done: true, total: job.total })
+      levelJobs.delete(videoId)
+      console.log(`[уровни] ${videoId}: задача завершена, ${job.done}/${job.total}`)
+    }
+  })()
+  return job
+}
+
+app.post('/api/level-video', async c => {
+  const { videoId, texts } = await c.req.json().catch(() => ({}))
+  if (!videoId || !Array.isArray(texts) || !texts.length) {
+    return c.json({ error: 'Ожидается videoId и непустой массив texts.' }, 400)
+  }
+  if (!(await claudeAvailable())) {
+    return c.json({ error: 'Не найден claude CLI — оценивать нечем.', code: 'NO_CLAUDE' }, 503)
+  }
+  const job = startLevelJob(videoId, texts)
+  return c.newResponse(
+    new ReadableStream({
+      start(ctrl) {
+        const enc = new TextEncoder()
+        const send = o => { try { ctrl.enqueue(enc.encode(JSON.stringify(o) + '\n')) } catch { unsub() } }
+        const listener = chunk => {
+          send(chunk)
+          if (chunk.done === true) { unsub(); try { ctrl.close() } catch { } }
+        }
+        const unsub = () => job.listeners.delete(listener)
+        if (Object.keys(job.lines).length) {
+          send({ lines: job.lines, done: job.done, total: job.total, cached: true })
+        }
+        if (job.finished) { send({ done: true, total: job.total }); try { ctrl.close() } catch { }; return }
+        job.listeners.add(listener)
+      },
+    }),
+    200,
+    { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' }
+  )
+})
+
+app.get('/api/levels/:videoId', async c => {
+  const lines = await readLevels(c.req.param('videoId'))
+  return c.json({ lines: lines || {}, count: lines ? Object.keys(lines).length : 0 })
+})
+
+/**
+ * Офлайн-пакет: скачать видео и собрать автономную страницу.
+ * POST запускает сборку (идемпотентно), GET status — опрос, GET files — отдача.
+ */
+app.post('/api/offline', async c => {
+  const { videoId } = await c.req.json().catch(() => ({}))
+  if (!/^[\w-]{11}$/.test(videoId || '')) return c.json({ error: 'Ожидается videoId.' }, 400)
+  buildOffline(videoId)   // работает в фоне, статус — отдельной ручкой
+  return c.json({ started: true })
+})
+
+app.get('/api/offline/status/:videoId', async c => {
+  const videoId = c.req.param('videoId')
+  if (await offlineReady(videoId)) {
+    return c.json({
+      state: 'ready',
+      files: [`/api/offline/${videoId}/razbor.html`, `/api/offline/${videoId}/${videoId}.mp4`],
+    })
+  }
+  return c.json(offlineStatus(videoId) || { state: 'none' })
+})
+
+app.get('/api/offline/:videoId/:file', async c => {
+  const res = await streamOffline(c.req.param('videoId'), c.req.param('file'), c.req.header('range'))
+  if (!res) return c.json({ error: 'Файл не найден.' }, 404)
+  if (res.unsatisfiable) return c.newResponse(null, 416, { 'content-range': `bytes */${res.size}` })
+  const headers = {
+    'content-type': res.type,
+    'accept-ranges': 'bytes',
+    'content-length': String(res.end - res.start + 1),
+  }
+  if (res.partial) {
+    headers['content-range'] = `bytes ${res.start}-${res.end}/${res.size}`
+    return c.newResponse(res.stream, 206, headers)
+  }
+  return c.newResponse(res.stream, 200, headers)
 })
 
 /**

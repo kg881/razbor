@@ -9,3 +9,6 @@ data/cues_local.json
 data/clips/
 server/bin/ffmpeg
 server/deno.lock
+data/cues_*.json
+!data/cues_demo.json
+data/offline/

@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Разбор — учить язык по видео</title>
+<!-- Фавикон — тот же знак, что .brand-mark: коралловый квадрат с двумя строками субтитров -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%23ff6b4a'/%3E%3Crect%20x='15'%20y='23'%20width='34'%20height='7'%20rx='3.5'%20fill='%23fff'/%3E%3Crect%20x='15'%20y='36'%20width='23'%20height='7'%20rx='3.5'%20fill='%23fff'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#0e1317">
 <style>
 /* ============================================================
    Палитра. Тёмная тема — основная (инструмент для просмотра видео),
@@ -243,6 +247,11 @@ button:focus-visible, [tabindex]:focus-visible {
 @media (prefers-reduced-motion: reduce) { .cue-tr:empty::after { animation: none; } }
 
 .tr-status { font-size: 0.75rem; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+
+/* Фильтр по уровню: перевод остаётся только под репликами на/выше выбранного уровня.
+   Простое пользователь понимает сам — перевод под каждой строкой мешает слушать. */
+.cue.lvl-skip .cue-tr { display: none; }
+select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; }
 .cue.active { background: var(--surface); }
 .cue.active .cue-time { color: var(--accent); }
 
@@ -436,6 +445,13 @@ button:focus-visible, [tabindex]:focus-visible {
       <button class="btn-ghost" id="loopBtn" type="button" aria-pressed="false">Зациклить</button>
       <button class="btn-ghost" id="slowBtn" type="button" aria-pressed="false">0.75×</button>
       <button class="btn-ghost" id="trBtn" type="button" aria-pressed="true">Русский</button>
+      <select class="btn-ghost" id="lvlSel" title="Переводить только реплики этого уровня и сложнее">
+        <option value="">Все уровни</option>
+        <option value="B1">B1</option>
+        <option value="B2">B2</option>
+        <option value="C">B2+</option>
+      </select>
+      <button class="btn-ghost" id="offBtn" type="button" title="Скачать видео и страницу для офлайна">Офлайн</button>
       <span class="tr-status" id="trStatus" role="status" aria-live="polite"></span>
       <div class="legend">
         <i>звучит сейчас</i>
@@ -470,6 +486,10 @@ button:focus-visible, [tabindex]:focus-visible {
    ============================================================ */
 let CUES  = /*__CUES__*/;
 let VIDEO_ID = "arj7oStGLkU";
+
+/* Офлайн-пакет: build_offline.py заменяет этот null на {video: "<vid>.mp4",
+   translations: {...}, levels: {...}} — страница тогда живёт без сети и без YouTube. */
+const OFFLINE = /*__OFFLINE__*/null;
 
 /* Адрес бэкенда. Он тянет субтитры произвольного видео по ссылке: в браузере это
    невозможно, потому что youtube.com/api/timedtext не отдаёт CORS-заголовки.
@@ -579,6 +599,67 @@ function paintTranslations(lines) {
   }
 }
 
+/* ---------- Фильтр по уровню ----------
+   Каждой реплике Claude ставит оценку сложности: A (базовая), B1, B2, C (идиомы,
+   редкая лексика). Выбранный уровень оставляет перевод только там, где реплика
+   НА или ВЫШЕ него: простое читается по-английски, сложное подстраховано. */
+let LEVELS = {};
+let userLevel = localStorage.getItem("razbor.level") || "";
+let lvlAbort = null;
+
+const LVL_RANK = { A: 0, B1: 1, B2: 2, C: 3 };
+
+function applyLevelFilter() {
+  const min = LVL_RANK[userLevel];
+  document.querySelectorAll(".cue").forEach(el => {
+    const g = LEVELS[el.dataset.i];
+    // Пока оценки нет — перевод показываем: лучше лишний перевод, чем скрытый нужный
+    el.classList.toggle("lvl-skip", min !== undefined && g !== undefined && LVL_RANK[g] < min);
+  });
+}
+
+async function loadLevels(videoId, texts) {
+  LEVELS = {};
+  lvlAbort?.abort();
+  const ac = (lvlAbort = new AbortController());
+  try {
+    const cached = await fetch(`${API}/api/levels/${videoId}`, { signal: ac.signal })
+      .then(r => (r.ok ? r.json() : { lines: {} }))
+      .catch(() => ({ lines: {} }));
+    if (ac.signal.aborted) return;
+    Object.assign(LEVELS, cached.lines || {});
+    applyLevelFilter();
+    if (Object.keys(LEVELS).length >= texts.length) return;
+
+    const res = await fetch(`${API}/api/level-video`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ videoId, texts }),
+      signal: ac.signal,
+    });
+    if (!res.ok) return;
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split("\n");
+      buf = parts.pop();
+      for (const line of parts) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.lines) { Object.assign(LEVELS, msg.lines); applyLevelFilter(); }
+      }
+    }
+  } catch (err) {
+    if (err.name !== "AbortError") console.warn("уровни:", err.message);
+  } finally {
+    if (lvlAbort === ac) lvlAbort = null;
+  }
+}
+
 /**
  * Тянет перевод для видео: сперва готовый из кэша, недостающее — переводит на лету.
  * Прерываемо: при смене видео старый поток отменяется, иначе перевод предыдущего
@@ -642,18 +723,38 @@ async function loadTranslations(videoId, texts) {
   }
 }
 
+/* ---------- Адаптер плеера ----------
+   Один интерфейс на два плеера: YouTube-iframe онлайн и локальный <video>
+   в офлайн-пакете. Всё управление ходит только через P — прямых вызовов
+   player.* в остальном коде нет. */
+let videoEl = null;
+const P = {
+  local: !!OFFLINE,
+  time:    () => P.local ? (videoEl?.currentTime || 0) : (ready ? player.getCurrentTime() : 0),
+  playing: () => P.local ? !!(videoEl && !videoEl.paused && !videoEl.ended)
+                         : (ready && player.getPlayerState && player.getPlayerState() === 1),
+  seek:    t  => { if (P.local) { if (videoEl) { videoEl.currentTime = t; videoEl.play(); } }
+                   else if (ready) { player.seekTo(t, true); player.playVideo(); } },
+  toggle:  () => { if (P.local) { if (videoEl) videoEl.paused ? videoEl.play() : videoEl.pause(); }
+                   else if (ready) { player.getPlayerState() === 1 ? player.pauseVideo() : player.playVideo(); } },
+  rate:    r  => { if (P.local) { if (videoEl) videoEl.playbackRate = r; }
+                   else if (ready) player.setPlaybackRate(r); },
+  load:    v  => { if (!P.local && ready) player.loadVideoById(v); },
+};
+
 /* ---------- Караоке-подсветка ----------
    У IFrame API нет события timeupdate, поэтому опрашиваем getCurrentTime()
-   в rAF и интерполируем между тиками, иначе подсветка дёргается. */
+   в rAF и интерполируем между тиками, иначе подсветка дёргается.
+   Для локального <video> тот же цикл — currentTime у него точный сам по себе. */
 let lastT = 0, lastStamp = 0;
 function tick() {
   requestAnimationFrame(tick);
-  if (!ready || !player.getCurrentTime) return;
+  if (!P.local && (!ready || !player.getCurrentTime)) return;
 
-  const raw = player.getCurrentTime();
+  const raw = P.time();
   if (raw !== lastT) { lastT = raw; lastStamp = performance.now(); }
-  const playing = player.getPlayerState && player.getPlayerState() === 1;
-  const t = playing ? raw + (performance.now() - lastStamp) / 1000 : raw;
+  const playing = P.playing();
+  const t = playing && !P.local ? raw + (performance.now() - lastStamp) / 1000 : raw;
 
   document.getElementById("tc").textContent = fmt(t);
 
@@ -739,6 +840,13 @@ function lookup(ci, wi) {
   const saveBtn = document.getElementById("saveBtn");
   saveBtn.onclick = () => addCard(key, word, wordCache.get(cacheKey)?.tr || "", cue, wi);
   if (hit) return;
+  // В офлайн-пакете сети нет — честно говорим сразу, а не после таймаута запроса
+  if (OFFLINE) {
+    const el = document.getElementById("lookupTr");
+    el.textContent = "перевод слова доступен только онлайн";
+    el.classList.add("lookup-miss");
+    return;
+  }
 
   fetch(`${API}/api/word`, {
     method: "POST",
@@ -792,7 +900,7 @@ function addCard(key, word, tr, cue, wi) {
 
 /* ---------- Переслушать и петля ----------
    Вместо вырезания аудио (запрещено правилами YouTube) — перемотка внутри плеера. */
-function seek(t) { if (ready) { player.seekTo(t, true); player.playVideo(); } }
+function seek(t) { P.seek(t); }
 function replay(cue) { seek(cue.start); toast("Фраза с начала"); }
 
 /* ---------- Колода ---------- */
@@ -980,6 +1088,20 @@ function onYouTubeIframeAPIReady() {
 }
 window.onYouTubeIframeAPIReady = onYouTubeIframeAPIReady;
 
+/* Локальный плеер офлайн-пакета: обычный <video>, файл лежит рядом со страницей. */
+function mountLocalPlayer() {
+  const box = document.querySelector(".player-box");
+  box.innerHTML = "";
+  videoEl = document.createElement("video");
+  videoEl.src = OFFLINE.video;
+  videoEl.controls = true;
+  videoEl.playsInline = true;
+  videoEl.preload = "metadata";
+  videoEl.style.cssText = "position:absolute;inset:0;width:100%;height:100%;background:#000";
+  box.appendChild(videoEl);
+  tick();
+}
+
 /* ---------- Управление ---------- */
 document.getElementById("replayBtn").onclick = () => {
   const c = CUES[current >= 0 ? current : 0];
@@ -993,7 +1115,7 @@ document.getElementById("loopBtn").onclick = e => {
 };
 document.getElementById("slowBtn").onclick = e => {
   slow = !slow;
-  if (ready) player.setPlaybackRate(slow ? 0.75 : 1);
+  P.rate(slow ? 0.75 : 1);
   e.currentTarget.setAttribute("aria-pressed", String(slow));
 };
 document.getElementById("themeBtn").onclick = () => {
@@ -1050,14 +1172,25 @@ document.getElementById("urlForm").onsubmit = async e => {
     trAbort?.abort();
     trAbort = null;
     TRANSLATIONS = {};
+    lvlAbort?.abort();
+    lvlAbort = null;
+    LEVELS = {};
     trStatus("");
     applyTrMode();
+    document.getElementById("offBtn").textContent = "Офлайн";
     renderTranscript();
     renderDeck();
-    if (ready) player.loadVideoById(VIDEO_ID);
+    P.load(VIDEO_ID);
     toast(`Загружено реплик: ${CUES.length}${info.fromCache ? " (из кэша)" : ""}`);
-    // Перевод не ждём: строки уже на экране, русская дорожка дотекает поверх них.
+    // Перевод и уровни не ждём: строки уже на экране, остальное дотекает поверх.
     loadTranslations(VIDEO_ID, CUES.map(c => c.text));
+    loadLevels(VIDEO_ID, CUES.map(c => c.text));
+    // Реплики — на сервер: клиент качал их сам, а офлайн-пакету они нужны на диске
+    fetch(`${API}/api/cues-store`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ videoId: VIDEO_ID, cues: CUES }),
+    }).catch(() => {});
   } catch (err) {
     const unreachable = /Failed to fetch|NetworkError|aborted/i.test(err.message) || err.name === "AbortError";
     const httpsToLocal = location.protocol === "https:" && /^http:\/\/(localhost|127\.)/.test(API);
@@ -1128,7 +1261,7 @@ document.getElementById("transcript").addEventListener("scroll", () => { userScr
 
 document.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
-  if (e.code === "Space") { e.preventDefault(); ready && (player.getPlayerState() === 1 ? player.pauseVideo() : player.playVideo()); }
+  if (e.code === "Space") { e.preventDefault(); P.toggle(); }
   if (e.key === "ArrowLeft" && current > 0) seek(CUES[current - 1].start);
   if (e.key === "ArrowRight" && current < CUES.length - 1) seek(CUES[current + 1].start);
   if (e.key.toLowerCase() === "r") { const c = CUES[current]; c && replay(c); }
@@ -1147,13 +1280,76 @@ document.getElementById("trBtn").onclick = () => {
   }
 };
 
+/* Уровень: селектор в панели, выбор переживает перезагрузку. */
+const lvlSel = document.getElementById("lvlSel");
+lvlSel.value = userLevel;
+lvlSel.onchange = () => {
+  userLevel = lvlSel.value;
+  localStorage.setItem("razbor.level", userLevel);
+  applyLevelFilter();
+  toast(userLevel ? `Перевод только для ${lvlSel.options[lvlSel.selectedIndex].text} и сложнее` : "Перевод для всех реплик");
+};
+
+/* Офлайн: сервер качает видео и собирает автономную страницу, мы опрашиваем статус.
+   Готовый пакет — два файла, их можно скинуть на телефон AirDrop'ом. */
+document.getElementById("offBtn").onclick = async e => {
+  const btn = e.currentTarget;
+  if (btn.dataset.busy) return;
+  btn.dataset.busy = "1";
+  btn.textContent = "Готовлю…";
+  try {
+    const st = await fetch(`${API}/api/offline/status/${VIDEO_ID}`).then(r => r.json());
+    if (st.state !== "ready") {
+      await fetch(`${API}/api/offline`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ videoId: VIDEO_ID }),
+      });
+      toast("Качаю видео — на длинном подкасте это минуты");
+      for (;;) {
+        await new Promise(r => setTimeout(r, 4000));
+        const s = await fetch(`${API}/api/offline/status/${VIDEO_ID}`).then(r => r.json());
+        if (s.state === "ready") break;
+        if (s.state === "error") throw new Error(s.error || "не собрался");
+        btn.textContent = s.state === "building" ? "Собираю…" : "Качаю…";
+      }
+    }
+    btn.textContent = "Офлайн готов";
+    toast("Пакет готов: страница + видео");
+    // Ссылки на оба файла — прямо в расшифровку, чтобы было что нажать
+    const box = document.createElement("div");
+    box.className = "empty";
+    box.innerHTML = `<div class="empty-title">Офлайн-пакет готов</div>
+      <p><a href="${API}/api/offline/${VIDEO_ID}/razbor.html" download>razbor.html</a> +
+      <a href="${API}/api/offline/${VIDEO_ID}/${VIDEO_ID}.mp4" download>видео .mp4</a></p>
+      <p>Оба файла — в одну папку, на телефон AirDrop'ом. Открывать страницу из
+      приложения с файлами (Documents и подобные) — видео лежит рядом, сеть не нужна.</p>`;
+    document.getElementById("transcript").prepend(box);
+  } catch (err) {
+    btn.textContent = "Офлайн";
+    toast(`Офлайн не собрался: ${err.message}`);
+  } finally {
+    delete btn.dataset.busy;
+  }
+};
 renderTranscript();
 renderDeck();
 applyTrMode();
-loadTranslations(VIDEO_ID, CUES.map(c => c.text));
-const tag = document.createElement("script");
-tag.src = "https://www.youtube.com/iframe_api";
-document.head.appendChild(tag);
+if (OFFLINE) {
+  // Пакет автономен: перевод и уровни зашиты при сборке, сети нет.
+  TRANSLATIONS = OFFLINE.translations || {};
+  LEVELS = OFFLINE.levels || {};
+  paintTranslations(TRANSLATIONS);
+  applyLevelFilter();
+  document.getElementById("trStatus").textContent = "";
+  mountLocalPlayer();
+} else {
+  loadTranslations(VIDEO_ID, CUES.map(c => c.text));
+  loadLevels(VIDEO_ID, CUES.map(c => c.text));
+  const tag = document.createElement("script");
+  tag.src = "https://www.youtube.com/iframe_api";
+  document.head.appendChild(tag);
+}
 </script>
 </body>
 </html>
