@@ -282,12 +282,16 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
   overflow: hidden;
   min-width: 0;
 }
+/* Пять вкладок в колонке 340px. nowrap давал наезд подписей друг на друга,
+   разрешённый перенос — разрыв «Повторени/е» посреди слова. Поэтому подписи
+   короткие в один слог-два, шрифт мельче, и всё влезает без переносов. */
 .tabs { display: flex; border-bottom: 1px solid var(--line); flex: none; }
 .tab {
-  flex: 1;
-  min-width: 0;                 /* пять вкладок в 340px — иначе распирают колонку */
-  padding: 0.85rem 0.3rem;
-  font-size: 0.78rem;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.8rem 0.15rem;
+  font-size: 0.72rem;
+  letter-spacing: -0.01em;
   white-space: nowrap;
   font-weight: 560;
   color: var(--text-mute);
@@ -538,7 +542,7 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
     <div class="tabs" role="tablist">
       <button class="tab" role="tab" aria-selected="true" data-tab="lookup">Слово</button>
       <button class="tab" role="tab" aria-selected="false" data-tab="deck">Колода</button>
-      <button class="tab" role="tab" aria-selected="false" data-tab="review">Повторение</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="review">Повтор</button>
       <button class="tab" role="tab" aria-selected="false" data-tab="dictation">Диктант</button>
       <button class="tab" role="tab" aria-selected="false" data-tab="stats">Прогресс</button>
     </div>
