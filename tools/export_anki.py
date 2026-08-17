@@ -91,14 +91,19 @@ def main():
         word = c.get("word", "")
         ctx = c.get("ctx", "")
         wi = c.get("wi", -1)
+        # Карточка может держать словосочетание: len слов начиная с wi
+        # (у старых карточек поля нет — одно слово).
+        wn = int(c.get("len") or 1)
         words = ctx.split(" ")
 
         if 0 <= wi < len(words):
-            gapped = words.copy()
-            gapped[wi] = '<span class="gap"></span>'
+            hi = min(wi + wn, len(words))
+            # Один пропуск на всё словосочетание: несколько подряд читаются как
+            # несвязанные дыры, а вспоминать надо цельное выражение.
+            gapped = words[:wi] + ['<span class="gap"></span>'] + words[hi:]
             gapped_html = " ".join(gapped)
             full_html = " ".join(
-                f"<b>{w}</b>" if i == wi else w for i, w in enumerate(words))
+                f"<b>{w}</b>" if wi <= i < hi else w for i, w in enumerate(words))
         else:
             gapped_html, full_html = ctx, ctx
 

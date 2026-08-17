@@ -327,6 +327,11 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
 }
 .context-text { font-family: var(--font-read); font-size: 0.98rem; line-height: 1.5; }
 .context-text b { color: var(--accent); font-weight: 620; }
+/* Слова контекста кликабельны: так собирается словосочетание для разбора */
+.ctx-w { cursor: pointer; border-radius: 3px; padding: 0 1px; }
+.ctx-w:hover { background: var(--surface-2); }
+.ctx-w.sel { color: var(--accent); font-weight: 620; }
+.ctx-hint { display: block; font-size: 0.72rem; color: var(--text-mute); margin-top: 0.45rem; line-height: 1.4; }
 .lookup-actions { display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; }
 
 /* Колода */
@@ -582,6 +587,9 @@ const API = new URLSearchParams(location.search).get("api")
 const deck = new Map(JSON.parse(localStorage.getItem("razbor.deck") || "[]"));
 let current = -1, selected = null, player = null, ready = false;
 let loopCue = null, slow = false, userScrolling = 0;
+// «Доиграть до секунды и встать» — для диктанта: реплика должна играть ровно
+// одна, иначе плеер уезжает дальше и следующая фраза подсказывает ответ на слух.
+let playUntil = 0;
 let stepMode = localStorage.getItem("razbor.step") === "on", stepStopped = -1;
 
 const save = () => localStorage.setItem("razbor.deck", JSON.stringify([...deck]));
@@ -626,7 +634,15 @@ function renderTranscript() {
       s.dataset.ci = ci;
       s.dataset.wi = wi;
       if (deck.has(norm(wd.w))) s.classList.add("known");
-      s.onclick = () => lookup(ci, wi);
+      // Shift+клик растягивает разбор до словосочетания от уже выбранного слова —
+      // быстрый путь для десктопа; на телефоне то же делается кликами в контексте.
+      s.onclick = e => {
+        if (e.shiftKey && selected && selected.ci === ci) {
+          getSelection().removeAllRanges(); // иначе браузер выделит текст между кликами
+          const a = selected.anchor ?? selected.wi;
+          lookup(ci, Math.min(a, wi), Math.abs(wi - a) + 1, a);
+        } else lookup(ci, wi);
+      };
       orig.appendChild(s);
       orig.appendChild(document.createTextNode(" "));
     });
@@ -638,6 +654,22 @@ function renderTranscript() {
     body.append(orig, tr);
     el.append(time, body);
     box.appendChild(el);
+  });
+  paintKnownPhrases();
+}
+
+/* Сохранённые словосочетания подчёркиваются так же, как слова, но по одному
+   span'у их не поймать — ищем последовательность слов карточки в каждой реплике. */
+function paintKnownPhrases() {
+  const phrases = [...deck.keys()].filter(k => k.includes(" ")).map(k => k.split(" "));
+  if (!phrases.length) return;
+  document.querySelectorAll(".cue").forEach(el => {
+    const spans = el.querySelectorAll(".w");
+    const keys = [...spans].map(s => norm(s.textContent));
+    for (const ph of phrases)
+      for (let i = 0; i + ph.length <= keys.length; i++)
+        if (ph.every((w, j) => keys[i + j] === w))
+          for (let j = 0; j < ph.length; j++) spans[i + j].classList.add("known");
   });
 }
 
@@ -842,6 +874,8 @@ function tick() {
 
   if (loopCue && t > loopCue.end) { seek(loopCue.start); return; }
 
+  if (playUntil && t >= playUntil) { playUntil = 0; P.pause(); }
+
   /* Режим «по фразам»: пауза на конце каждой реплики. Слушаешь → успеваешь понять →
      пробел → дальше. Без паузы речь идёт сплошным потоком, и разбирать её некогда:
      ухо ещё держит предыдущую фразу, а говорят уже следующую. */
@@ -906,12 +940,22 @@ const saveWords = () =>
 
 const esc = s => String(s).replace(/[&<>"]/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
 
-function lookup(ci, wi) {
-  const cue = CUES[ci], word = cue.words[wi].w, key = norm(word);
-  selected = { key, word, ci, wi, cue };
+/* Разбор может держать не одно слово, а словосочетание: len слов начиная с wi.
+   Фразовые глаголы и идиомы («plow through», «get away with») — главное, что
+   стоит учить по видео, и по одному слову их не взять: «plow» отдельно и
+   «through» отдельно не складываются в смысл. anchor — опорное слово, от
+   которого выбор растягивается кликами по соседним словам контекста. */
+function lookup(ci, wi, len = 1, anchor = wi) {
+  const cue = CUES[ci];
+  const picked = cue.words.slice(wi, wi + len).map(x => x.w);
+  const word = picked.join(" ");
+  const key = picked.map(norm).filter(Boolean).join(" ");
+  selected = { key, word, ci, wi, len, anchor, cue };
   switchTab("lookup");
 
-  const ctx = cue.words.map((w, i) => (i === wi ? `<b>${esc(w.w)}</b>` : esc(w.w))).join(" ");
+  const ctx = cue.words.map((w, i) =>
+    `<span class="ctx-w${i >= wi && i < wi + len ? " sel" : ""}" data-i="${i}">${esc(w.w)}</span>`
+  ).join(" ");
   const cacheKey = `${key}|${cue.text}`;
   const hit = wordCache.get(cacheKey);
 
@@ -921,17 +965,29 @@ function lookup(ci, wi) {
     <div class="lookup-note" id="lookupNote">${hit?.note ? esc(hit.note) : ""}</div>
     <div class="context">
       <span class="context-label">Как это звучит в видео · ${fmt(cue.start)}</span>
-      <div class="context-text">${ctx}</div>
+      <div class="context-text" id="ctxText">${ctx}</div>
+      <span class="ctx-hint">${len > 1
+        ? "Клик по опорному слову — вернуться к одному слову."
+        : "Нажми соседнее слово, чтобы разобрать словосочетание целиком."}</span>
     </div>
     <div class="lookup-actions">
       <button class="btn" id="saveBtn" type="button">${deck.has(key) ? "В колоде" : "Сохранить"}</button>
       <button class="btn-ghost" id="ctxPlay" type="button">Переслушать</button>
     </div>`;
 
+  // Клик по слову контекста растягивает выбор от опорного слова до нажатого.
+  document.querySelectorAll("#ctxText .ctx-w").forEach(s => {
+    s.onclick = () => {
+      const j = +s.dataset.i;
+      if (j === anchor && len > 1) lookup(ci, anchor, 1);
+      else lookup(ci, Math.min(anchor, j), Math.abs(j - anchor) + 1, anchor);
+    };
+  });
+
   document.getElementById("ctxPlay").onclick = () => replay(cue);
   // Сохранить можно и до ответа переводчика: карточка доберёт перевод, когда он придёт.
   const saveBtn = document.getElementById("saveBtn");
-  saveBtn.onclick = () => addCard(key, word, wordCache.get(cacheKey)?.tr || "", cue, wi);
+  saveBtn.onclick = () => addCard(key, word, wordCache.get(cacheKey)?.tr || "", cue, wi, len);
   if (hit) return;
   // В офлайн-пакете сети нет — честно говорим сразу, а не после таймаута запроса
   if (OFFLINE) {
@@ -966,12 +1022,14 @@ function lookup(ci, wi) {
     });
 }
 
-function addCard(key, word, tr, cue, wi) {
+function addCard(key, word, tr, cue, wi, len = 1) {
   if (deck.has(key)) { toast("Уже в колоде"); return; }
   deck.set(key, {
     word, tr: tr || "",
     ctx: cue.words.map(w => w.w).join(" "),
-    wi, at: cue.start, due: Date.now(), ease: 2.5, ivl: 0, reps: 0,
+    // len — сколько слов занимает словосочетание; у старых карточек поля нет,
+    // читать всюду как (c.len || 1).
+    wi, len, at: cue.start, due: Date.now(), ease: 2.5, ivl: 0, reps: 0,
     // Для видеофрагмента фразы: из какого видео и до какой секунды она звучит.
     vid: VIDEO_ID, end: cue.end,
   });
@@ -984,7 +1042,10 @@ function addCard(key, word, tr, cue, wi) {
   }).catch(() => { /* не вырезался — карточка сработает через перемотку плеера */ });
   save();
   logStat("added");
-  document.querySelectorAll(".w").forEach(s => {
+  // Подчеркнуть новые вхождения: слово ловится по одному span'у, словосочетание —
+  // поиском последовательности слов по репликам.
+  if (key.includes(" ")) paintKnownPhrases();
+  else document.querySelectorAll(".w").forEach(s => {
     if (norm(s.textContent) === key) s.classList.add("known");
   });
   document.getElementById("saveBtn").textContent = "В колоде";
@@ -994,7 +1055,8 @@ function addCard(key, word, tr, cue, wi) {
 
 /* ---------- Переслушать и петля ----------
    Вместо вырезания аудио (запрещено правилами YouTube) — перемотка внутри плеера. */
-function seek(t) { P.seek(t); }
+// Любая ручная перемотка снимает «доиграть до»: пользователь сам решил, куда слушать.
+function seek(t) { playUntil = 0; P.seek(t); }
 function replay(cue) { seek(cue.start); toast("Фраза с начала"); }
 
 /* ---------- Статистика ----------
@@ -1189,7 +1251,9 @@ function renderReview() {
   }
   const [key, c] = dueCards[0];
   reviewKey = key;
-  const ctx = c.ctx.split(" ").map((w, i) => (i === c.wi ? `<b>${w}</b>` : w)).join(" ");
+  // Карточка может держать словосочетание: len слов начиная с wi (у старых len нет).
+  const inSel = i => i >= c.wi && i < c.wi + (c.len || 1);
+  const ctx = c.ctx.split(" ").map((w, i) => (inSel(i) ? `<b>${esc(w)}</b>` : esc(w))).join(" ");
 
   // Фраза в карточке — вырезанный кусок видео, не перемотка подкаста: в колоде
   // фразы из разных видео, и грузить двухчасовое ради одной реплики нельзя.
@@ -1200,7 +1264,7 @@ function renderReview() {
   // Вспоминание в контексте прочнее изолированного: слово всплывает вместе с
   // конструкцией, в которой живёт, а не как строчка словаря.
   const clozeCtx = c.ctx.split(" ")
-    .map((w, i) => (i === c.wi ? `<span class="cloze">${revealed ? esc(w) : "&nbsp;".repeat(Math.max(4, w.length))}</span>` : esc(w)))
+    .map((w, i) => (inSel(i) ? `<span class="cloze">${revealed ? esc(w) : "&nbsp;".repeat(Math.max(4, w.length))}</span>` : esc(w)))
     .join(" ");
 
   box.innerHTML = `
@@ -1422,7 +1486,9 @@ function renderDictation() {
   const result = document.getElementById("dictResult");
   dictChecked = false;
 
-  const play = () => replay(cue);
+  // Играем ровно эту реплику и встаём: P.seek напрямую, потому что seek()
+  // сбрасывает playUntil. Тот же запас 0.05 с, что у режима «по фразам».
+  const play = () => { P.seek(cue.start); playUntil = cue.end - 0.05; };
   const check = () => {
     const { parts, score } = diffWords(input.value, cue.text);
     dictChecked = true;
@@ -1690,7 +1756,9 @@ function normalizeJson3(raw) {
 document.getElementById("transcript").addEventListener("scroll", () => { userScrolling = Date.now(); });
 
 document.addEventListener("keydown", e => {
-  if (e.target.tagName === "INPUT") return;
+  // Не только INPUT: диктант набирается в TEXTAREA, и без этого пробел и стрелки
+  // дёргали плеер вместо ввода текста; SELECT — селектор уровня, там стрелки свои.
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
   if (e.code === "Space") {
     e.preventDefault();
     // В режиме «по фразам» пробел на паузе ведёт к следующей реплике, а не просто
