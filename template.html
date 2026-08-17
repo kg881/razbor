@@ -356,6 +356,19 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
   align-items: baseline;
 }
 .card-row:last-child { border-bottom: 0; }
+.card-del {
+  color: var(--text-mute);
+  font-size: 0.8rem;
+  padding: 0 0.25rem;
+  border-radius: 4px;
+  flex: none;
+}
+.card-del:hover { color: var(--accent); background: var(--accent-soft); }
+/* Нарезка в диктанте компактнее карточной: она вспомогательная, не сердце экрана */
+.dict-clip { margin: 0 0 0.6rem; }
+.dict-clip:empty { display: none; }
+.dict-clip video { max-height: 150px; }
+#lookupClip:empty { display: none; }
 .card-w { font-weight: 600; font-family: var(--font-read); }
 .card-tr { color: var(--text-soft); font-size: 0.86rem; flex: 1; min-width: 0; }
 .card-jump {
@@ -660,6 +673,16 @@ function renderTranscript() {
 
 /* Сохранённые словосочетания подчёркиваются так же, как слова, но по одному
    span'у их не поймать — ищем последовательность слов карточки в каждой реплике. */
+/* Полная перерисовка подчёркиваний. Нужна при удалении из колоды: точечно снять
+   подчёркивание нельзя — то же слово может входить и в оставшееся словосочетание. */
+function repaintKnown() {
+  document.querySelectorAll(".w.known").forEach(s => s.classList.remove("known"));
+  document.querySelectorAll(".w").forEach(s => {
+    if (deck.has(norm(s.textContent))) s.classList.add("known");
+  });
+  paintKnownPhrases();
+}
+
 function paintKnownPhrases() {
   const phrases = [...deck.keys()].filter(k => k.includes(" ")).map(k => k.split(" "));
   if (!phrases.length) return;
@@ -948,7 +971,10 @@ const esc = s => String(s).replace(/[&<>"]/g, m => ({ "&": "&amp;", "<": "&lt;",
 function lookup(ci, wi, len = 1, anchor = wi) {
   const cue = CUES[ci];
   const picked = cue.words.slice(wi, wi + len).map(x => x.w);
-  const word = picked.join(" ");
+  // Для показа и карточки пунктуацию по краям срезаем: «wrinkles,» и «expression.»
+  // в колоде выглядят как мусор. Ключ и так строится через norm().
+  const trimmed = picked.map(w => w.replace(/^[^\p{L}\p{N}'-]+|[^\p{L}\p{N}'-]+$/gu, ""));
+  const word = trimmed.filter(Boolean).join(" ") || picked.join(" ");
   const key = picked.map(norm).filter(Boolean).join(" ");
   selected = { key, word, ci, wi, len, anchor, cue };
   switchTab("lookup");
@@ -973,7 +999,8 @@ function lookup(ci, wi, len = 1, anchor = wi) {
     <div class="lookup-actions">
       <button class="btn" id="saveBtn" type="button">${deck.has(key) ? "В колоде" : "Сохранить"}</button>
       <button class="btn-ghost" id="ctxPlay" type="button">Переслушать</button>
-    </div>`;
+    </div>
+    <div class="review-clip" id="lookupClip"></div>`;
 
   // Клик по слову контекста растягивает выбор от опорного слова до нажатого.
   document.querySelectorAll("#ctxText .ctx-w").forEach(s => {
@@ -984,7 +1011,9 @@ function lookup(ci, wi, len = 1, anchor = wi) {
     };
   });
 
-  document.getElementById("ctxPlay").onclick = () => replay(cue);
+  // Нарезка, не перемотка: фраза играет в своём мини-плеере, основное видео не трогаем
+  document.getElementById("ctxPlay").onclick = () =>
+    phraseClip(document.getElementById("lookupClip"), VIDEO_ID, cue.start, cue.end, { autoplay: true });
   // Сохранить можно и до ответа переводчика: карточка доберёт перевод, когда он придёт.
   const saveBtn = document.getElementById("saveBtn");
   saveBtn.onclick = () => addCard(key, word, wordCache.get(cacheKey)?.tr || "", cue, wi, len);
@@ -1101,9 +1130,10 @@ function renderDeck() {
   const due = [...deck.values()].filter(c => c.due <= Date.now()).length;
   const rows = [...deck.entries()].map(([k, c]) => `
     <div class="card-row">
-      <span class="card-w">${c.word}</span>
-      <span class="card-tr">${c.tr || "—"}</span>
+      <span class="card-w">${esc(c.word)}</span>
+      <span class="card-tr">${esc(c.tr || "—")}</span>
       <button class="card-jump" type="button" data-at="${c.at}">${fmt(c.at)}</button>
+      <button class="card-del" type="button" data-k="${esc(k)}" title="Уже знаю — убрать из колоды">✕</button>
     </div>`).join("");
 
   box.innerHTML = `
@@ -1119,6 +1149,21 @@ function renderDeck() {
 
   box.querySelectorAll(".card-jump").forEach(b => {
     b.onclick = () => seek(parseFloat(b.dataset.at));
+  });
+
+  // «Уже знаю»: карточка уходит из колоды, подчёркивания в расшифровке снимаются.
+  // Слово при этом перестаёт считаться в покрытии — это честно: покрытие меряет
+  // словарь В КОЛОДЕ, а не всё, что пользователь когда-либо знал.
+  box.querySelectorAll(".card-del").forEach(b => {
+    b.onclick = () => {
+      const k = b.dataset.k;
+      const word = deck.get(k)?.word || k;
+      deck.delete(k);
+      save();
+      repaintKnown();
+      renderDeck();
+      toast(`«${word}» убрано из колоды`);
+    };
   });
   // Покрытие пересчитываем при показе колоды: оно растёт по мере сохранения слов
   if (library[VIDEO_ID]) noteVideo(VIDEO_ID, null, { cov: coverage() });
@@ -1201,18 +1246,11 @@ function coverage() {
 /* Видеофрагмент фразы в карточке. Клип обычно уже вырезан при сохранении слова;
    если нет (сервер был занят или карточка со старой сессии) — дорезаем на месте
    и показываем состояние, а не пустую дыру. */
-function mountClip(c, box) {
-  // Офлайн клипы с сервера недоступны, но полное видео лежит рядом — играем
-  // нужный отрезок из него медиафрагментом #t=начало,конец.
-  if (OFFLINE) {
-    box.innerHTML = "";
-    const v = document.createElement("video");
-    v.src = `${OFFLINE.video}#t=${Math.max(0, c.at - 0.25)},${(c.end ?? c.at + 4) + 0.35}`;
-    v.controls = true; v.playsInline = true; v.preload = "metadata";
-    box.appendChild(v);
-    return;
-  }
-  const url = `${API}/api/clip`;
+/* Единый мини-плеер фразы. Играет ВЫРЕЗАННЫЙ кусок в собственном маленьком <video>,
+   основное видео не перематывается и не останавливается — это главное отличие от
+   старого поведения, где «переслушать» дёргало основной плеер. Онлайн кусок режется
+   на сервере при первом обращении (дальше кэш), офлайн — медиафрагмент локального файла. */
+function phraseClip(box, vid, start, end, { autoplay = false } = {}) {
   const put = src => {
     box.innerHTML = "";
     const v = document.createElement("video");
@@ -1221,11 +1259,19 @@ function mountClip(c, box) {
     v.playsInline = true;
     v.preload = "auto";
     box.appendChild(v);
+    // Блокировку автоплея не считаем ошибкой: контролы на месте, нажмёт сам
+    if (autoplay) v.play().catch(() => {});
+    return v;
   };
-  fetch(url, {
+  if (OFFLINE) {
+    put(`${OFFLINE.video}#t=${Math.max(0, start - 0.25)},${(end ?? start + 4) + 0.35}`);
+    return;
+  }
+  box.innerHTML = `<div class="clip-miss">Вырезаю кусок видео…</div>`;
+  fetch(`${API}/api/clip`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ videoId: c.vid, start: c.at, end: c.end }),
+    body: JSON.stringify({ videoId: vid, start, end }),
   })
     .then(r => r.json())
     .then(res => {
@@ -1235,7 +1281,10 @@ function mountClip(c, box) {
     .catch(() => {
       box.innerHTML = `<div class="clip-miss">Кусок видео не вырезался — можно переслушать в плеере.</div>`;
     });
-  box.innerHTML = `<div class="clip-miss">Вырезаю кусок видео…</div>`;
+}
+
+function mountClip(c, box) {
+  phraseClip(box, c.vid, c.at, c.end ?? c.at + 4);
 }
 
 let reviewKey = null, revealed = false;
@@ -1460,7 +1509,7 @@ function diffWords(userText, refText) {
   return { parts: out, score: m ? Math.round((hit / m) * 100) : 0 };
 }
 
-function renderDictation() {
+function renderDictation(auto = false) {
   const box = document.getElementById("panelDictation");
   if (!CUES.length) { box.innerHTML = `<div class="empty"><div class="empty-title">Нет реплик</div></div>`; return; }
   dictIdx = Math.min(Math.max(0, dictIdx), CUES.length - 1);
@@ -1471,6 +1520,7 @@ function renderDictation() {
       <span>Реплика ${dictIdx + 1} из ${CUES.length}</span>
       <button class="btn-ghost" id="dictPlay" type="button">Слушать</button>
     </div>
+    <div class="review-clip dict-clip" id="dictClip"></div>
     <textarea class="dict-input" id="dictInput" rows="3" placeholder="Напиши, что услышал…"
       autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
     <div class="dict-result" id="dictResult"></div>
@@ -1479,16 +1529,25 @@ function renderDictation() {
       <button class="btn-ghost" id="dictPrev" type="button">←</button>
       <button class="btn-ghost" id="dictNext" type="button">→</button>
     </div>
-    <p class="dict-hint">Enter — проверить, затем → к следующей. Реплика играет из видео,
-    подглядывать в расшифровку смысла нет.</p>`;
+    <p class="dict-hint">Enter — проверить, затем → к следующей. Фраза играет отдельной
+    нарезкой — основное видео не трогается. Подглядывать в расшифровку смысла нет.</p>`;
 
   const input = document.getElementById("dictInput");
   const result = document.getElementById("dictResult");
   dictChecked = false;
 
-  // Играем ровно эту реплику и встаём: P.seek напрямую, потому что seek()
-  // сбрасывает playUntil. Тот же запас 0.05 с, что у режима «по фразам».
-  const play = () => { P.seek(cue.start); playUntil = cue.end - 0.05; };
+  // Нарезка в своём мини-плеере: раньше здесь мотало основное видео, и переход
+  // на вкладку диктанта сбивал просмотр — главная жалоба по этому режиму.
+  const play = () => phraseClip(document.getElementById("dictClip"), VIDEO_ID, cue.start, cue.end, { autoplay: true });
+  // Следующая реплика режется заранее, пока печатаешь эту — переход будет мгновенным
+  if (!OFFLINE && CUES[dictIdx + 1]) {
+    const n = CUES[dictIdx + 1];
+    fetch(`${API}/api/clip`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ videoId: VIDEO_ID, start: n.start, end: n.end }),
+    }).catch(() => {});
+  }
   const check = () => {
     const { parts, score } = diffWords(input.value, cue.text);
     dictChecked = true;
@@ -1504,17 +1563,19 @@ function renderDictation() {
 
   document.getElementById("dictPlay").onclick = play;
   document.getElementById("dictCheck").onclick = check;
-  document.getElementById("dictPrev").onclick = () => { dictIdx--; renderDictation(); };
-  document.getElementById("dictNext").onclick = () => { dictIdx++; renderDictation(); };
+  document.getElementById("dictPrev").onclick = () => { dictIdx--; renderDictation(true); };
+  document.getElementById("dictNext").onclick = () => { dictIdx++; renderDictation(true); };
   input.onkeydown = e => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       // Первый Enter проверяет, второй — уводит дальше: набирать не отрывая рук
-      if (dictChecked) { dictIdx++; renderDictation(); } else check();
+      if (dictChecked) { dictIdx++; renderDictation(true); } else check();
     }
   };
   input.focus();
-  play();
+  // Нарезка стартует сама только при листании (это явное действие пользователя);
+  // открытие вкладки ничего не играет — чтобы не влезать звуком поверх видео.
+  if (auto) play();
 }
 
 /* ---------- Прогресс ---------- */
