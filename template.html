@@ -188,6 +188,7 @@ button:focus-visible, [tabindex]:focus-visible {
   content: ""; width: 10px; height: 3px; border-radius: 2px; background: var(--accent);
 }
 .legend i.known::before { background: var(--known); }
+.legend i.idiom::before { background: none; border-bottom: 2px dotted var(--accent); height: 4px; border-radius: 0; }
 
 /* ---------- Расшифровка: главная поверхность чтения ---------- */
 .transcript {
@@ -272,6 +273,10 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
   box-shadow: inset 0 -2px 0 var(--known);
 }
 .w.now.known { box-shadow: inset 0 -2px 0 rgba(255,255,255,.55); }
+/* Выражение из радара: пунктир «это цельная единица, кликни целиком».
+   Семантика отдельно от колоды: пунктир = подсказка, зелёный = уже учишь. */
+.w.idiom { border-bottom: 2px dotted color-mix(in srgb, var(--accent) 60%, transparent); padding-bottom: 1px; }
+.w.idiom.known { border-bottom-color: transparent; }
 
 /* ---------- Правая колонка ---------- */
 .side {
@@ -549,6 +554,7 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
       <div class="legend">
         <i>звучит сейчас</i>
         <i class="known">в колоде</i>
+        <i class="idiom">выражение</i>
       </div>
       <div class="tc" id="tc">0:00</div>
     </div>
@@ -654,6 +660,10 @@ function renderTranscript() {
           getSelection().removeAllRanges(); // иначе браузер выделит текст между кликами
           const a = selected.anchor ?? selected.wi;
           lookup(ci, Math.min(a, wi), Math.abs(wi - a) + 1, a);
+        } else if (s.dataset.exLen) {
+          // Слово из размеченного выражения: разбираем выражение целиком, а не кусок.
+          // anchor = нажатое слово, так что повторный клик по нему сожмёт выбор до одного.
+          lookup(ci, +s.dataset.exFrom, +s.dataset.exLen, wi);
         } else lookup(ci, wi);
       };
       orig.appendChild(s);
@@ -673,6 +683,89 @@ function renderTranscript() {
 
 /* Сохранённые словосочетания подчёркиваются так же, как слова, но по одному
    span'у их не поймать — ищем последовательность слов карточки в каждой реплике. */
+/* ---------- Радар идиом ----------
+   Выражения, которые надо учить целиком (фразовые глаголы, идиомы, устойчивые
+   сочетания), сканирует Claude заранее и помечает пунктиром — до первого клика.
+   Без этого «plow through» легко проскочить: кликаешь «plow», получаешь
+   бессмыслицу, идёшь дальше. Клик по любому слову выражения выделяет его целиком. */
+let IDIOMS = {};
+let idiomAbort = null;
+
+/* Ищем выражение в строке пословным сравнением через norm — пунктуация и регистр
+   не мешают. Выражение может уходить в следующую строку: тогда подчёркиваем его
+   начало до конца строки (хвост в чужой строке не трогаем). */
+function paintIdiomLine(ci) {
+  const list = IDIOMS[ci];
+  if (!list?.length) return;
+  const spans = document.querySelectorAll(`.cue[data-i="${ci}"] .w`);
+  const keys = [...spans].map(s => norm(s.textContent));
+  for (const expr of list) {
+    const ph = expr.split(/\s+/).map(norm).filter(Boolean);
+    if (ph.length < 2) continue;
+    for (let i = 0; i < keys.length; i++) {
+      let j = 0;
+      while (j < ph.length && i + j < keys.length && keys[i + j] === ph[j]) j++;
+      // Полное совпадение, либо начало выражения упирается в конец строки
+      if (j === ph.length || (j > 0 && i + j === keys.length && j >= 2)) {
+        for (let k = 0; k < j; k++) {
+          const s = spans[i + k];
+          s.classList.add("idiom");
+          s.dataset.exFrom = i;
+          s.dataset.exLen = j;
+        }
+        break;
+      }
+    }
+  }
+}
+
+function paintIdioms(lines) {
+  for (const [i, list] of Object.entries(lines)) {
+    IDIOMS[i] = list;
+    paintIdiomLine(i);
+  }
+}
+
+async function loadIdioms(videoId, texts) {
+  IDIOMS = {};
+  idiomAbort?.abort();
+  const ac = (idiomAbort = new AbortController());
+  try {
+    const cached = await fetch(`${API}/api/idioms/${videoId}`, { signal: ac.signal })
+      .then(r => (r.ok ? r.json() : { lines: {} }))
+      .catch(() => ({ lines: {} }));
+    if (ac.signal.aborted) return;
+    paintIdioms(cached.lines || {});
+
+    const res = await fetch(`${API}/api/idiom-video`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ videoId, texts }),
+      signal: ac.signal,
+    });
+    if (!res.ok) return;
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split("\n");
+      buf = parts.pop();
+      for (const line of parts) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.lines) paintIdioms(msg.lines);
+      }
+    }
+  } catch (err) {
+    if (err.name !== "AbortError") console.warn("идиомы:", err.message);
+  } finally {
+    if (idiomAbort === ac) idiomAbort = null;
+  }
+}
+
 /* Полная перерисовка подчёркиваний. Нужна при удалении из колоды: точечно снять
    подчёркивание нельзя — то же слово может входить и в оставшееся словосочетание. */
 function repaintKnown() {
@@ -1731,6 +1824,9 @@ document.getElementById("urlForm").onsubmit = async e => {
     lvlAbort?.abort();
     lvlAbort = null;
     LEVELS = {};
+    idiomAbort?.abort();
+    idiomAbort = null;
+    IDIOMS = {};
     trStatus("");
     applyTrMode();
     document.getElementById("offBtn").textContent = "Офлайн";
@@ -1742,6 +1838,7 @@ document.getElementById("urlForm").onsubmit = async e => {
     // Перевод и уровни не ждём: строки уже на экране, остальное дотекает поверх.
     loadTranslations(VIDEO_ID, CUES.map(c => c.text));
     loadLevels(VIDEO_ID, CUES.map(c => c.text));
+    loadIdioms(VIDEO_ID, CUES.map(c => c.text));
     // Реплики — на сервер: клиент качал их сам, а офлайн-пакету они нужны на диске
     fetch(`${API}/api/cues-store`, {
       method: "POST",
@@ -1915,6 +2012,7 @@ if (OFFLINE) {
   // Пакет автономен: перевод и уровни зашиты при сборке, сети нет.
   TRANSLATIONS = OFFLINE.translations || {};
   LEVELS = OFFLINE.levels || {};
+  paintIdioms(OFFLINE.idioms || {});
   // Снимок колоды из пакета подхватываем только в пустую: на телефоне могли
   // уже наработать своё, и затирать это снимком с компьютера нельзя.
   if (!deck.size && OFFLINE.deck?.length) {
@@ -1928,6 +2026,7 @@ if (OFFLINE) {
 } else {
   loadTranslations(VIDEO_ID, CUES.map(c => c.text));
   loadLevels(VIDEO_ID, CUES.map(c => c.text));
+  loadIdioms(VIDEO_ID, CUES.map(c => c.text));
   const tag = document.createElement("script");
   tag.src = "https://www.youtube.com/iframe_api";
   document.head.appendChild(tag);

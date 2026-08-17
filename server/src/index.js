@@ -20,6 +20,7 @@ import { fetchCues, parseVideoId } from './fetch-subs.js'
 import { getTracks, pickTrack } from './track.js'
 import { translateVideo, readCached, explainWord } from './translate-video.js'
 import { gradeVideo, readLevels } from './levels.js'
+import { scanVideo, readIdioms } from './idioms.js'
 import { buildOffline, offlineStatus, offlineReady, streamOffline } from './offline.js'
 import { cutClip, readClip, clipName } from './clips.js'
 import { claudeAvailable } from './claude.js'
@@ -269,6 +270,74 @@ app.post('/api/level-video', async c => {
 app.get('/api/levels/:videoId', async c => {
   const lines = await readLevels(c.req.param('videoId'))
   return c.json({ lines: lines || {}, count: lines ? Object.keys(lines).length : 0 })
+})
+
+/**
+ * Радар идиом: тот же реестр задач и NDJSON-поток, что у перевода и уровней.
+ * Помечает выражения, которые надо учить целиком, до первого клика пользователя.
+ */
+const idiomJobs = new Map()
+
+function startIdiomJob(videoId, texts) {
+  const existing = idiomJobs.get(videoId)
+  if (existing) return existing
+  const job = { lines: {}, done: 0, total: texts.length, listeners: new Set(), finished: false }
+  idiomJobs.set(videoId, job)
+  ;(async () => {
+    try {
+      for await (const chunk of scanVideo(videoId, texts)) {
+        Object.assign(job.lines, chunk.lines)
+        job.done = chunk.done
+        for (const fn of job.listeners) fn(chunk)
+      }
+    } catch (e) {
+      for (const fn of job.listeners) fn({ error: e.message })
+    } finally {
+      job.finished = true
+      for (const fn of job.listeners) fn({ done: true, total: job.total })
+      idiomJobs.delete(videoId)
+      console.log(`[идиомы] ${videoId}: задача завершена`)
+    }
+  })()
+  return job
+}
+
+app.post('/api/idiom-video', async c => {
+  const { videoId, texts } = await c.req.json().catch(() => ({}))
+  if (!videoId || !Array.isArray(texts) || !texts.length) {
+    return c.json({ error: 'Ожидается videoId и непустой массив texts.' }, 400)
+  }
+  if (!(await claudeAvailable())) {
+    return c.json({ error: 'Не найден claude CLI.', code: 'NO_CLAUDE' }, 503)
+  }
+  const job = startIdiomJob(videoId, texts)
+  return c.newResponse(
+    new ReadableStream({
+      start(ctrl) {
+        const enc = new TextEncoder()
+        const send = o => { try { ctrl.enqueue(enc.encode(JSON.stringify(o) + '\n')) } catch { unsub() } }
+        const listener = chunk => {
+          send(chunk)
+          if (chunk.done === true) { unsub(); try { ctrl.close() } catch { } }
+        }
+        const unsub = () => job.listeners.delete(listener)
+        if (Object.keys(job.lines).length) {
+          send({ lines: job.lines, done: job.done, total: job.total, cached: true })
+        }
+        if (job.finished) { send({ done: true, total: job.total }); try { ctrl.close() } catch { }; return }
+        job.listeners.add(listener)
+      },
+    }),
+    200,
+    { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' }
+  )
+})
+
+app.get('/api/idioms/:videoId', async c => {
+  const data = await readIdioms(c.req.param('videoId'))
+  if (!data) return c.json({ lines: {}, count: 0 })
+  const { __done, ...lines } = data
+  return c.json({ lines, count: Object.keys(lines).length })
 })
 
 /**

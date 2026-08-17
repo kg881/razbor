@@ -38,10 +38,14 @@ def main():
     deck_path = ROOT / "data" / "deck_snapshot.json"
     deck = json.loads(deck_path.read_text("utf-8")) if deck_path.exists() else []
 
+    idioms = load("idioms")
+    idioms.pop("__done", None)   # служебный ключ докачки, странице не нужен
+
     offline = {
         "video": f"{vid}.mp4",
         "translations": load("translations"),
         "levels": load("levels"),
+        "idioms": idioms,
         "deck": deck,
     }
 
