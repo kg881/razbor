@@ -10,9 +10,13 @@
  * На телефон пакет уезжает AirDrop'ом (папку целиком) и открывается из приложения
  * с файлами, умеющего локальный HTML (Documents by Readdle и подобные).
  *
- * Качает yt-dlp своим родным загрузчиком — здесь нет проблемы 403 из клипов:
- * она была в связке «yt-dlp отдаёт ссылку ffmpeg с чужим UA», а полный файл
- * yt-dlp качает сам.
+ * Качает родной загрузчик yt-dlp, обёрнутый в ретраи. Разбор 403 (18.08.2026):
+ * ошибка «unable to download video data: HTTP Error 403» оказалась ПЛАВАЮЩЕЙ —
+ * отдельные edge-хосты googlevideo отвечают 403 при живой подписи, и тот же
+ * вызов через минуту качает 27 МБ за 4.5 с. Повторная экстракция получает другой
+ * хост, поэтому лечение — ретрай с паузой, а не смена загрузчика: обходные схемы
+ * (свой fetch с Range, ffmpeg по прямым ссылкам) утыкались либо в тот же 403,
+ * либо в n-троттлинг до 35 КБ/с.
  */
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -29,6 +33,7 @@ export const OFFLINE_DIR = path.join(ROOT, 'data', 'offline')
 
 const YTDLP = process.env.YTDLP_PATH || 'yt-dlp'
 const FFMPEG_DIR = process.env.FFMPEG_DIR || path.resolve(ROOT, 'server', 'bin')
+// deno нужен yt-dlp для решения JS-челленджей YouTube
 const ENV = { ...process.env, PATH: `${process.env.HOME}/.deno/bin:${process.env.PATH}` }
 
 // videoId -> {state: 'downloading'|'building'|'ready'|'error', error?}
@@ -65,14 +70,28 @@ export async function buildOffline(videoId) {
   try {
     await fs.mkdir(dir, { recursive: true })
     if (!(await fs.access(mp4).then(() => true, () => false))) {
-      await execFileAsync(YTDLP, [
-        '-f', 'bv*[height<=480][ext=mp4]+ba[ext=m4a]/b[height<=480]',
-        '--merge-output-format', 'mp4',
-        '--ffmpeg-location', FFMPEG_DIR,
-        '--no-progress', '--no-playlist', '-q',
-        '-o', mp4,
-        `https://youtu.be/${videoId}`,
-      ], { timeout: 30 * 60_000, maxBuffer: 16 * 1024 * 1024, env: ENV })
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await execFileAsync(YTDLP, [
+            '-f', 'bv*[height<=480][ext=mp4]+ba[ext=m4a]/b[height<=480]',
+            '--merge-output-format', 'mp4',
+            '--ffmpeg-location', FFMPEG_DIR,
+            '--no-progress', '--no-playlist', '-q',
+            '-o', mp4,
+            `https://youtu.be/${videoId}`,
+          ], { timeout: 30 * 60_000, maxBuffer: 16 * 1024 * 1024, env: ENV })
+          break
+        } catch (e) {
+          await fs.rm(mp4 + '.part', { force: true })
+          const denied = /403|Forbidden/i.test(String(e.stderr || e.message))
+          if (denied && attempt < 3) {
+            console.log(`[офлайн] ${videoId}: 403 от edge-хоста, ретрай ${attempt + 1}`)
+            await new Promise(r => setTimeout(r, 5000))
+            continue
+          }
+          throw e
+        }
+      }
     }
 
     jobs.set(videoId, { state: 'building' })

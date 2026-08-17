@@ -34,7 +34,7 @@ const YTDLP = process.env.YTDLP_PATH || 'yt-dlp'
 // ffmpeg лежит симлинком в server/bin (статический бинарь imageio-ffmpeg, brew нет)
 const FFMPEG = process.env.FFMPEG_PATH || path.resolve(ROOT, 'server', 'bin', 'ffmpeg')
 // UA обязан совпадать с клиентом, которому выписаны ссылки, — иначе 403 (см. шапку)
-const MEDIA_UA = 'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip'
+export const MEDIA_UA = 'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip'
 // deno нужен yt-dlp для решения JS-челленджей YouTube
 const ENV = { ...process.env, PATH: `${process.env.HOME}/.deno/bin:${process.env.PATH}` }
 
@@ -51,9 +51,9 @@ export function clipName(videoId, start, end) {
 }
 
 // Прямые ссылки на медиа: живут ~6 часов, кэшируем на 4 с запасом.
-const mediaCache = new Map() // videoId -> {urls: [video, audio?], exp}
+export const mediaCache = new Map() // videoId -> {urls: [video, audio?], exp}
 
-async function mediaUrls(videoId) {
+export async function mediaUrls(videoId) {
   const hit = mediaCache.get(videoId)
   if (hit && hit.exp > Date.now()) return hit.urls
 

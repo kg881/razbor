@@ -600,7 +600,11 @@ const OFFLINE = /*__OFFLINE__*/null;
    а бэкенд поднят локально. */
 const API = new URLSearchParams(location.search).get("api")
   || localStorage.getItem("razbor.api")
-  || "http://localhost:8788";
+  // Страница открыта по LAN-адресу Мака (с телефона) — бэкенд там же, на 8788.
+  // «localhost» с телефона указывал бы на сам телефон, и всё серверное молчало.
+  || (location.protocol === "http:" && location.hostname && location.hostname !== "localhost"
+      ? `http://${location.hostname}:8788`
+      : "http://localhost:8788");
 
 /* ---------- Состояние ---------- */
 const deck = new Map(JSON.parse(localStorage.getItem("razbor.deck") || "[]"));
