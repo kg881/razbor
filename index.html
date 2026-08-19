@@ -305,6 +305,19 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
 }
 .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
 .tab:hover { color: var(--text-soft); }
+/* Долг повторения виден с любой вкладки: за карточки садятся, когда число маячит
+   перед глазами, а не когда случайно заглянул в «Повтор» */
+.tab-badge {
+  display: inline-block;
+  margin-left: 0.35em;
+  padding: 0.05em 0.4em;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.9em;
+  font-variant-numeric: tabular-nums;
+}
+.tab-badge[hidden] { display: none; }
 .panel { overflow-y: auto; padding: 1.1rem; flex: 1; display: none; }
 .panel[data-open="true"] { display: block; }
 
@@ -421,6 +434,11 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
   font-weight: 620;
 }
 .review-word.small { font-size: 1.35rem; margin-top: 0.5rem; }
+/* Ввод ответа в клозе: вспомнить и НАПЕЧАТАТЬ слово труднее, чем узнать его после
+   «Показать» — и именно это усилие закрепляет. Дифф не даёт себе польстить. */
+.rev-input { margin-top: 1rem; }
+.rev-typed { margin-top: 0.9rem; }
+.grade[data-hint="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 
 /* Диктант */
 .dict-head {
@@ -566,7 +584,7 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
     <div class="tabs" role="tablist">
       <button class="tab" role="tab" aria-selected="true" data-tab="lookup">Слово</button>
       <button class="tab" role="tab" aria-selected="false" data-tab="deck">Колода</button>
-      <button class="tab" role="tab" aria-selected="false" data-tab="review">Повтор</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="review">Повтор<span class="tab-badge" id="dueBadge" hidden></span></button>
       <button class="tab" role="tab" aria-selected="false" data-tab="dictation">Диктант</button>
       <button class="tab" role="tab" aria-selected="false" data-tab="stats">Прогресс</button>
     </div>
@@ -615,7 +633,7 @@ let loopCue = null, slow = false, userScrolling = 0;
 let playUntil = 0;
 let stepMode = localStorage.getItem("razbor.step") === "on", stepStopped = -1;
 
-const save = () => localStorage.setItem("razbor.deck", JSON.stringify([...deck]));
+const save = () => { localStorage.setItem("razbor.deck", JSON.stringify([...deck])); paintDueBadge(); };
 const norm = w => w.toLowerCase().replace(/^[^\p{L}'-]+|[^\p{L}'-]+$/gu, "");
 const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
@@ -1386,6 +1404,9 @@ function mountClip(c, box) {
 
 let reviewKey = null, revealed = false;
 let clozeMode = localStorage.getItem("razbor.cloze") !== "off";
+// Результат ввода ответа: дифф напечатанного против спрятанного слова.
+// Живёт от проверки до оценки — по нему подсвечивается честная оценка.
+let typedDiff = null;
 function renderReview() {
   const box = document.getElementById("panelReview");
   const dueCards = [...deck.entries()].filter(([, c]) => c.due <= Date.now());
@@ -1413,6 +1434,11 @@ function renderReview() {
     .map((w, i) => (inSel(i) ? `<span class="cloze">${revealed ? esc(w) : "&nbsp;".repeat(Math.max(4, w.length))}</span>` : esc(w)))
     .join(" ");
 
+  // Подсказка оценки по результату ввода: угадал всё — «Норм», часть фразы —
+  // «Трудно», мимо — «Забыл». Только подсветка: последнее слово за пользователем,
+  // FSRS живёт на честных оценках.
+  const hint = typedDiff ? (typedDiff.score === 100 ? 3 : typedDiff.score > 0 ? 2 : 1) : 0;
+
   box.innerHTML = `
     <div class="review-card">
       ${clozeMode
@@ -1421,15 +1447,23 @@ function renderReview() {
         : `<div class="review-word">${esc(c.word)}</div>`}
       ${hasClip ? `<div class="review-clip" id="revClipBox"></div>` : ""}
       ${clozeMode ? "" : `<div class="review-ctx">${ctx}</div>`}
+      ${typedDiff ? `<div class="dict-diff rev-typed">${diffHtml(typedDiff.parts)}</div>` : ""}
       ${revealed ? `<div class="review-answer">${esc(c.tr) || "перевожу…"}</div>` : ""}
       ${revealed
         ? `<div class="grade-row">
-             <button class="grade" data-g="1" type="button">Забыл</button>
-             <button class="grade" data-g="2" type="button">Трудно</button>
-             <button class="grade" data-g="3" type="button">Норм</button>
-             <button class="grade" data-g="4" type="button">Легко</button>
+             ${[[1, "Забыл"], [2, "Трудно"], [3, "Норм"], [4, "Легко"]].map(([g, label]) =>
+               `<button class="grade" data-g="${g}"${g === hint ? ` data-hint="true"` : ""} type="button">${label}</button>`).join("")}
            </div>`
-        : `<div class="grade-row" style="grid-template-columns:1fr"><button class="grade" id="revealBtn" type="button">${clozeMode ? "Показать слово" : "Показать перевод"}</button></div>`}
+        : clozeMode
+          // Ответ печатается, а не «вспоминается про себя»: продукция по памяти
+          // закрепляет сильнее узнавания, а дифф не даёт зачесть себе почти-ответ.
+          ? `<input class="dict-input rev-input" id="revInput" type="text" placeholder="Что в пропуске?"
+               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+             <div class="grade-row" style="grid-template-columns:1fr 1fr">
+               <button class="grade" id="revCheck" type="button">Проверить</button>
+               <button class="grade" id="revealBtn" type="button">Показать слово</button>
+             </div>`
+          : `<div class="grade-row" style="grid-template-columns:1fr"><button class="grade" id="revealBtn" type="button">Показать перевод</button></div>`}
     </div>
     <div class="lookup-actions">
       <button class="btn-ghost" id="revPlay" type="button">${hasClip ? "Фраза ещё раз" : "Послушать в видео"}</button>
@@ -1439,9 +1473,24 @@ function renderReview() {
   document.getElementById("clozeBtn").onclick = () => {
     clozeMode = !clozeMode;
     localStorage.setItem("razbor.cloze", clozeMode ? "on" : "off");
+    typedDiff = null;
     renderReview();
     toast(clozeMode ? "Пропуск во фразе" : "Слово и перевод");
   };
+
+  // Проверка ввода: сравниваем тем же пословным диффом, что и диктант.
+  // Пустой Enter честно ведёт себя как «Показать слово» — без подсказки оценки.
+  const revInput = document.getElementById("revInput");
+  if (revInput) {
+    const checkTyped = () => {
+      typedDiff = revInput.value.trim() ? diffWords(revInput.value, c.word) : null;
+      revealed = true;
+      renderReview();
+    };
+    document.getElementById("revCheck").onclick = checkTyped;
+    revInput.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); checkTyped(); } };
+    revInput.focus();
+  }
 
   if (hasClip) mountClip(c, document.getElementById("revClipBox"));
   document.getElementById("revPlay").onclick = () => {
@@ -1561,6 +1610,7 @@ function grade(key, g) {
   deck.set(key, c); save();
   logStat(g === 1 ? "again" : "review");
   revealed = false;
+  typedDiff = null;
   renderReview(); renderDeck();
   toast(ivl ? `Следующий показ через ${plural(ivl, "день", "дня", "дней")}` : "Вернётся через 10 минут");
 }
@@ -1606,6 +1656,13 @@ function diffWords(userText, refText) {
   return { parts: out, score: m ? Math.round((hit / m) * 100) : 0 };
 }
 
+/** Дифф в разметку — один вид ошибок на диктант и проверку клоза. */
+const diffHtml = parts => parts.map(p =>
+  p.t === "ok" ? `<span class="d-ok">${esc(p.w)}</span>`
+  : p.t === "wrong" ? `<span class="d-wrong">${esc(p.w)}</span><span class="d-got">${esc(p.got)}</span>`
+  : p.t === "miss" ? `<span class="d-miss">${esc(p.w)}</span>`
+  : `<span class="d-extra">${esc(p.w)}</span>`).join(" ");
+
 function renderDictation(auto = false) {
   const box = document.getElementById("panelDictation");
   if (!CUES.length) { box.innerHTML = `<div class="empty"><div class="empty-title">Нет реплик</div></div>`; return; }
@@ -1650,11 +1707,7 @@ function renderDictation(auto = false) {
     dictChecked = true;
     result.innerHTML = `
       <div class="dict-score" data-good="${score >= 80}">${score}% слов</div>
-      <div class="dict-diff">${parts.map(p =>
-        p.t === "ok" ? `<span class="d-ok">${esc(p.w)}</span>`
-        : p.t === "wrong" ? `<span class="d-wrong">${esc(p.w)}</span><span class="d-got">${esc(p.got)}</span>`
-        : p.t === "miss" ? `<span class="d-miss">${esc(p.w)}</span>`
-        : `<span class="d-extra">${esc(p.w)}</span>`).join(" ")}</div>`;
+      <div class="dict-diff">${diffHtml(parts)}</div>`;
     logStat("review");
   };
 
@@ -1714,13 +1767,24 @@ function renderStats() {
 }
 
 /* ---------- Вкладки ---------- */
+/* Бейдж «к повтору» на вкладке. Карточки созревают со временем, без действий
+   пользователя — поэтому кроме save() бейдж обновляет и минутный таймер. */
+function paintDueBadge() {
+  const el = document.getElementById("dueBadge");
+  const due = [...deck.values()].filter(c => c.due <= Date.now()).length;
+  el.textContent = due;
+  el.hidden = !due;
+}
+setInterval(paintDueBadge, 60000);
+paintDueBadge();
+
 function switchTab(name) {
   document.querySelectorAll(".tab").forEach(t =>
     t.setAttribute("aria-selected", String(t.dataset.tab === name)));
   document.querySelectorAll(".panel").forEach(p =>
     p.dataset.open = String(p.dataset.panel === name));
   if (name === "deck") renderDeck();
-  if (name === "review") { revealed = false; renderReview(); }
+  if (name === "review") { revealed = false; typedDiff = null; renderReview(); }
   if (name === "dictation") renderDictation();
   if (name === "stats") renderStats();
 }
@@ -1933,6 +1997,15 @@ document.addEventListener("keydown", e => {
   if (e.key === "ArrowLeft" && current > 0) seek(CUES[current - 1].start);
   if (e.key === "ArrowRight" && current < CUES.length - 1) seek(CUES[current + 1].start);
   if (e.key.toLowerCase() === "r") { const c = CUES[current]; c && replay(c); }
+  // Оценка карточки цифрами 1-4: после Enter-проверки руки уже на клавиатуре,
+  // тянуться мышью к четырём кнопкам — разрыв ритма повторения.
+  if (/^[1-4]$/.test(e.key) && revealed && deck.has(reviewKey)
+      && document.getElementById("panelReview").dataset.open === "true") {
+    // Без preventDefault цифра долетает до поля ввода СЛЕДУЮЩЕЙ карточки: фокус
+    // переезжает синхронно внутри keydown, а вставка символа происходит после.
+    e.preventDefault();
+    grade(reviewKey, +e.key);
+  }
 });
 
 /* ---------- Старт ---------- */
