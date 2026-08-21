@@ -1488,7 +1488,11 @@ function renderReview() {
       renderReview();
     };
     document.getElementById("revCheck").onclick = checkTyped;
-    revInput.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); checkTyped(); } };
+    revInput.onkeydown = e => {
+      // ⌘/Ctrl+Enter — фраза ещё раз, не бросая набор ответа: тот же жест, что в диктанте
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); document.getElementById("revPlay").click(); return; }
+      if (e.key === "Enter") { e.preventDefault(); checkTyped(); }
+    };
     revInput.focus();
   }
 
@@ -1628,6 +1632,29 @@ function plural(n, one, few, many) {
    раньше уха, и на слух текст так и не расшифровывается. */
 let dictIdx = 0, dictChecked = false;
 
+/* Позиция диктанта — по каждому видео своя. Раньше dictIdx жил только в памяти
+   страницы: перезагрузка отбрасывала на первую реплику (на подкасте в тысячу
+   реплик — долистывай заново), а после смены видео индекс вообще показывал
+   реплику чужого видео. */
+const dictPos = JSON.parse(localStorage.getItem("razbor.dictPos") || "{}");
+
+/* Диктант открывается там, где ты смотришь: посмотрел кусок — тут же продиктовал
+   его, пока звучание ещё в ушах. Видео не трогали (стоит на нуле) — продолжаем
+   с сохранённой позиции этого видео. */
+function dictSync() {
+  const t = P.time();
+  if (t > 0.5) {
+    // Последняя реплика, начавшаяся до t. findCue не годится: между репликами
+    // он отвечает «ничего», а диктанту нужна ближайшая уже прозвучавшая.
+    let lo = 0, hi = CUES.length - 1, res = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (CUES[mid].start <= t) { res = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    dictIdx = res;
+  } else dictIdx = dictPos[VIDEO_ID] ?? 0;
+}
+
 /** Сравнение по словам без учёта регистра и пунктуации: важно услышанное слово. */
 function diffWords(userText, refText) {
   const clean = s => s.toLowerCase().replace(/[^\p{L}\p{N}'\s-]/gu, "").split(/\s+/).filter(Boolean);
@@ -1668,10 +1695,13 @@ function renderDictation(auto = false) {
   if (!CUES.length) { box.innerHTML = `<div class="empty"><div class="empty-title">Нет реплик</div></div>`; return; }
   dictIdx = Math.min(Math.max(0, dictIdx), CUES.length - 1);
   const cue = CUES[dictIdx];
+  // Запоминаем место сразу при показе: закрытая вкладка не теряет позицию
+  dictPos[VIDEO_ID] = dictIdx;
+  localStorage.setItem("razbor.dictPos", JSON.stringify(dictPos));
 
   box.innerHTML = `
     <div class="dict-head">
-      <span>Реплика ${dictIdx + 1} из ${CUES.length}</span>
+      <span>Реплика ${dictIdx + 1} из ${CUES.length} · ${fmt(cue.start)}</span>
       <button class="btn-ghost" id="dictPlay" type="button">Слушать</button>
     </div>
     <div class="review-clip dict-clip" id="dictClip"></div>
@@ -1683,8 +1713,9 @@ function renderDictation(auto = false) {
       <button class="btn-ghost" id="dictPrev" type="button">←</button>
       <button class="btn-ghost" id="dictNext" type="button">→</button>
     </div>
-    <p class="dict-hint">Enter — проверить, затем → к следующей. Фраза играет отдельной
-    нарезкой — основное видео не трогается. Подглядывать в расшифровку смысла нет.</p>`;
+    <p class="dict-hint">Enter — проверить, второй Enter — дальше, ⌘/Ctrl+Enter — слушать
+    ещё раз. Вкладка открывается на текущей фразе видео и помнит место. Фраза играет
+    отдельной нарезкой — основное видео не трогается.</p>`;
 
   const input = document.getElementById("dictInput");
   const result = document.getElementById("dictResult");
@@ -1716,6 +1747,10 @@ function renderDictation(auto = false) {
   document.getElementById("dictPrev").onclick = () => { dictIdx--; renderDictation(true); };
   document.getElementById("dictNext").onclick = () => { dictIdx++; renderDictation(true); };
   input.onkeydown = e => {
+    // ⌘/Ctrl+Enter — слушать ещё раз, не отрывая рук: цикл диктанта — это
+    // «слушать, печатать, слушать снова», и мышь до кнопки на каждом круге
+    // рвёт ритм ровно там, где нужна концентрация на звуке.
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); play(); return; }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       // Первый Enter проверяет, второй — уводит дальше: набирать не отрывая рук
@@ -1785,7 +1820,7 @@ function switchTab(name) {
     p.dataset.open = String(p.dataset.panel === name));
   if (name === "deck") renderDeck();
   if (name === "review") { revealed = false; typedDiff = null; renderReview(); }
-  if (name === "dictation") renderDictation();
+  if (name === "dictation") { dictSync(); renderDictation(); }
   if (name === "stats") renderStats();
 }
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => switchTab(t.dataset.tab));
