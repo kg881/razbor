@@ -473,6 +473,13 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
 .d-got::before { content: "→"; margin: 0 0.15em; }
 .d-miss { color: var(--accent); background: var(--accent-soft); border-radius: 3px; padding: 0 3px; }
 .d-extra { color: var(--text-mute); text-decoration: line-through; }
+/* Нерасслышанное слово кликабельно: пунктир — то же обещание, что у радара идиом */
+.d-tap { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.d-tap:hover { text-decoration-style: solid; }
+.d-busy { opacity: 0.55; }
+.d-saved { color: var(--known); text-decoration-style: solid; }
+.dict-gaps:not(:empty) { margin-top: 0.6rem; font-size: 0.88rem; line-height: 1.6; }
+.dict-gap b { font-weight: 620; }
 .dict-hint { font-size: 0.78rem; color: var(--text-mute); line-height: 1.5; margin-top: 0.9rem; }
 
 /* Прогресс */
@@ -1192,7 +1199,10 @@ function addCard(key, word, tr, cue, wi, len = 1) {
   else document.querySelectorAll(".w").forEach(s => {
     if (norm(s.textContent) === key) s.classList.add("known");
   });
-  document.getElementById("saveBtn").textContent = "В колоде";
+  // Кнопки «Сохранить» может не быть вовсе (карточку добавляет и диктант),
+  // а если панель разбора показывает ЧУЖОЕ слово — трогать её нельзя.
+  const saveBtn = document.getElementById("saveBtn");
+  if (saveBtn && selected?.key === key) saveBtn.textContent = "В колоде";
   renderDeck();
   toast(`«${word}» сохранено с контекстом`);
 }
@@ -1620,10 +1630,11 @@ function grade(key, g) {
 }
 
 /** 1 день / 2 дня / 5 дней — иначе «через 2 день» режет глаз. */
-function plural(n, one, few, many) {
+function plural(n, one, few, many) { return `${n} ${pluralWord(n, one, few, many)}`; }
+/** Только форма слова — для статов, где крупная цифра уже стоит отдельно. */
+function pluralWord(n, one, few, many) {
   const a = Math.abs(n) % 100, b = a % 10;
-  const word = a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many;
-  return `${n} ${word}`;
+  return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many;
 }
 
 /* ---------- Диктант ----------
@@ -1714,7 +1725,8 @@ function renderDictation(auto = false) {
       <button class="btn-ghost" id="dictNext" type="button">→</button>
     </div>
     <p class="dict-hint">Enter — проверить, второй Enter — дальше, ⌘/Ctrl+Enter — слушать
-    ещё раз. Вкладка открывается на текущей фразе видео и помнит место. Фраза играет
+    ещё раз. Не расслышал слово — кликни по нему в проверке: перевод и карточка
+    в колоду. Вкладка открывается на текущей фразе видео и помнит место. Фраза играет
     отдельной нарезкой — основное видео не трогается.</p>`;
 
   const input = document.getElementById("dictInput");
@@ -1733,12 +1745,75 @@ function renderDictation(auto = false) {
       body: JSON.stringify({ videoId: VIDEO_ID, start: n.start, end: n.end }),
     }).catch(() => {});
   }
+  /* Нерасслышанное слово — главный кандидат в колоду: раз ухо его не взяло,
+     его и надо учить. Клик по красному слову в диффе переводит его в контексте
+     фразы и сохраняет карточкой (с нарезкой) — не уводя из ритма диктанта
+     на вкладку разбора: цикл «слушать — печатать — проверить» не рвётся. */
+  const saveMissed = (wi, el) => {
+    if (el.classList.contains("d-busy")) return;
+    const raw = cue.words[wi]?.w ?? "";
+    // Пунктуацию по краям срезаем, как в разборе: «wrinkles,» в колоде — мусор
+    const word = raw.replace(/^[^\p{L}\p{N}'-]+|[^\p{L}\p{N}'-]+$/gu, "") || raw;
+    const key = norm(raw);
+    if (!key) return;
+    if (deck.has(key)) { el.classList.add("d-saved"); toast("Уже в колоде"); input.focus(); return; }
+    const done = tr => {
+      addCard(key, word, tr, cue, wi, 1);
+      el.classList.add("d-saved");
+      // Мини-глоссарий пробелов этой фразы: перевод остаётся перед глазами,
+      // а не мелькает в тосте на две секунды.
+      const gaps = document.getElementById("dictGaps");
+      if (gaps) gaps.insertAdjacentHTML("beforeend",
+        `<div class="dict-gap"><b>${esc(word)}</b>${tr ? ` — ${esc(tr)}` : ""}</div>`);
+      input.focus();
+    };
+    // В офлайн-пакете переводчика нет — карточка уходит без перевода:
+    // клоз и контекст работают и так, перевод доберётся при разборе онлайн.
+    if (OFFLINE) { done(""); return; }
+    el.classList.add("d-busy");
+    const cacheKey = `${key}|${cue.text}`;
+    const hit = wordCache.get(cacheKey);
+    (hit ? Promise.resolve(hit) : fetch(`${API}/api/word`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ word, context: cue.text }),
+    }).then(r => r.json())).then(res => {
+      if (!hit && res.tr) { wordCache.set(cacheKey, { tr: res.tr, note: res.note }); saveWords(); }
+      done(res.tr || "");
+    }).catch(() => done("")) // переводчик молчит — карточка всё равно нужна
+      .finally(() => el.classList.remove("d-busy"));
+  };
+
   const check = () => {
     const { parts, score } = diffWords(input.value, cue.text);
     dictChecked = true;
+    // Каждому слову эталона в диффе сопоставляем индекс в cue.words: клик должен
+    // открыть именно это вхождение. Простой счётчик не годится: clean() внутри
+    // diffWords выбрасывает чисто пунктуационные «слова», а слово без пословного
+    // тайминга может нести несколько токенов — поэтому раскладываем заранее.
+    const refMap = [];
+    cue.words.forEach((w, i) => {
+      const toks = w.w.toLowerCase().replace(/[^\p{L}\p{N}'\s-]/gu, "").split(/\s+/).filter(Boolean);
+      toks.forEach(() => refMap.push(i));
+    });
+    let k = 0;
+    for (const p of parts) if (p.t !== "extra") p.wi = refMap[k++];
+
+    // Разметка своя, не diffHtml: у диктанта пропуски кликабельны, у клоза — нет
     result.innerHTML = `
       <div class="dict-score" data-good="${score >= 80}">${score}% слов</div>
-      <div class="dict-diff">${diffHtml(parts)}</div>`;
+      <div class="dict-diff">${parts.map(p => {
+        if (p.t === "ok") return `<span class="d-ok">${esc(p.w)}</span>`;
+        if (p.t === "extra") return `<span class="d-extra">${esc(p.w)}</span>`;
+        const canTap = p.wi != null && norm(cue.words[p.wi].w);
+        const saved = canTap && deck.has(norm(cue.words[p.wi].w));
+        const cls = (p.t === "wrong" ? "d-wrong" : "d-miss")
+          + (canTap ? " d-tap" : "") + (saved ? " d-saved" : "");
+        return `<span class="${cls}"${canTap ? ` data-wi="${p.wi}" title="В колоду с переводом"` : ""}>${esc(p.w)}</span>`
+          + (p.t === "wrong" ? `<span class="d-got">${esc(p.got)}</span>` : "");
+      }).join(" ")}</div>
+      <div class="dict-gaps" id="dictGaps"></div>`;
+    result.querySelectorAll(".d-tap").forEach(s => { s.onclick = () => saveMissed(+s.dataset.wi, s); });
     logStat("review");
   };
 
@@ -1778,6 +1853,20 @@ function renderStats() {
     ? Math.round(cards.reduce((s, c) => s + fsrsRetrievability(c), 0) / cards.length * 100) : 0;
   const mature = cards.filter(c => (c.ivl || 0) >= 21).length;
 
+  // Серия: сколько дней подряд была хоть какая-то работа — слово, повтор или
+  // минута видео. Привычка в языке — половина результата, и цифра «дней подряд»
+  // держит её лучше графиков. Пустой сегодняшний день серию не рвёт: вечер
+  // впереди, серия «под угрозой», а не потеряна. Даты в UTC, как весь stats.
+  let streak = 0;
+  for (let i = 0; ; i++) {
+    const d = new Date(Date.now() - i * 864e5).toISOString().slice(0, 10);
+    const s = stats[d];
+    if (s && (s.added || s.review || s.sec)) streak++;
+    else if (i === 0) continue; // сегодня ещё пусто — считаем со вчера
+    else break;
+  }
+  const dueNow = [...deck.values()].filter(c => c.due <= Date.now()).length;
+
   box.innerHTML = `
     <div class="deck-stats">
       <div class="stat"><b>${week.added}</b><span>слов за неделю</span></div>
@@ -1789,6 +1878,11 @@ function renderStats() {
       <div class="stat"><b>${mature}</b><span>выучено прочно</span></div>
       <div class="stat"><b>${coverage()}%</b><span>понятно в видео</span></div>
     </div>
+    <div class="deck-stats">
+      <div class="stat"><b>${streak}</b><span>${pluralWord(streak, "день подряд", "дня подряд", "дней подряд")}</span></div>
+      <div class="stat"><b>${dueNow}</b><span>к повтору сейчас</span></div>
+      <div class="stat"><b>${deck.size}</b><span>слов в колоде</span></div>
+    </div>
     <div class="chart-title">Активность за 14 дней</div>
     <div class="chart">${days.map(d => {
       const h = Math.round(((d.added + d.review) / max) * 100);
@@ -1798,7 +1892,8 @@ function renderStats() {
         <span>${d.d.slice(8)}</span></div>`;
     }).join("")}</div>
     <p class="dict-hint">«Помню сейчас» — средняя вспоминаемость колоды по FSRS.
-    «Выучено прочно» — карточки с интервалом от трёх недель.</p>`;
+    «Выучено прочно» — карточки с интервалом от трёх недель. Серия — дни, где было
+    хоть одно слово, повтор или минута видео.</p>`;
 }
 
 /* ---------- Вкладки ---------- */
