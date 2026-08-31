@@ -278,6 +278,21 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
 .w.idiom { border-bottom: 2px dotted color-mix(in srgb, var(--accent) 60%, transparent); padding-bottom: 1px; }
 .w.idiom.known { border-bottom-color: transparent; }
 
+/* ---------- Режим «На слух» ----------
+   Текст реплики размыт, пока фраза не отзвучала: глаз читает быстрее, чем ухо
+   слышит, и при видимых субтитрах аудирование подменяется чтением. Прозвучавшая
+   реплика открывается — сверить услышанное можно сразу, глаз идёт ЗА ухом.
+   Подсмотреть досрочно: наведение (только английский), клик или T (всё). */
+.transcript[data-blind="on"] .cue:not(.heard):not(.peek) .cue-orig,
+.transcript[data-blind="on"] .cue:not(.heard):not(.peek) .cue-tr {
+  filter: blur(7px);
+  user-select: none;
+}
+/* Наведение приоткрывает только английский: перевод — следующая ступень подсказки */
+@media (hover: hover) {
+  .transcript[data-blind="on"] .cue:not(.heard):not(.peek):hover .cue-orig { filter: none; }
+}
+
 /* ---------- Правая колонка ---------- */
 .side {
   border-left: 1px solid var(--line);
@@ -574,6 +589,7 @@ select.btn-ghost { -webkit-appearance: none; appearance: none; cursor: pointer; 
         <option value="C">B2+</option>
       </select>
       <button class="btn-ghost" id="stepBtn" type="button" aria-pressed="false" title="Пауза после каждой реплики">По фразам</button>
+      <button class="btn-ghost" id="blindBtn" type="button" aria-pressed="false" title="Скрывать текст, пока фраза не прозвучит">На слух</button>
       <button class="btn-ghost" id="offBtn" type="button" title="Скачать видео и страницу для офлайна">Офлайн</button>
       <span class="tr-status" id="trStatus" role="status" aria-live="polite"></span>
       <div class="legend">
@@ -639,6 +655,12 @@ let loopCue = null, slow = false, userScrolling = 0;
 // одна, иначе плеер уезжает дальше и следующая фраза подсказывает ответ на слух.
 let playUntil = 0;
 let stepMode = localStorage.getItem("razbor.step") === "on", stepStopped = -1;
+// Режим «на слух»: текст реплики скрыт, пока она не отзвучала — тренировка
+// аудирования при обычном просмотре, а не только в диктанте.
+let blindMode = localStorage.getItem("razbor.blind") === "on";
+// Индексы прозвучавших реплик. Набор накопительный: перемотка назад не прячет
+// уже услышанное заново — что слышал, то и открыто.
+const heardSet = new Set();
 
 const save = () => { localStorage.setItem("razbor.deck", JSON.stringify([...deck])); paintDueBadge(); };
 const norm = w => w.toLowerCase().replace(/^[^\p{L}'-]+|[^\p{L}'-]+$/gu, "");
@@ -669,6 +691,16 @@ function renderTranscript() {
     time.textContent = fmt(cue.start);
     time.title = "Перейти к этому моменту";
     time.onclick = () => seek(cue.start);
+
+    // В режиме «на слух» первый клик по скрытой реплике только открывает её текст:
+    // разбирать слово, которого не видел, бессмысленно. capture + stopPropagation
+    // не пускают клик до слова; таймкод не размыт и работает как обычно.
+    el.addEventListener("click", e => {
+      if (!blindMode || el.classList.contains("heard") || el.classList.contains("peek")) return;
+      if (e.target.closest(".cue-time")) return;
+      e.stopPropagation();
+      el.classList.add("peek");
+    }, true);
 
     const body = document.createElement("div");
     body.className = "cue-body";
@@ -1034,6 +1066,9 @@ function tick() {
 
   const ci = findCue(t);
   if (ci !== current) {
+    // Уходим с реплики вперёд по времени — она отзвучала, и в режиме «на слух»
+    // её текст открывается. Перемотка назад (t меньше её конца) прослушкой не считается.
+    if (current >= 0 && CUES[current] && t > CUES[current].end - 0.1) markHeard(current);
     const prev = document.querySelector(".cue.active");
     if (prev) {
       prev.classList.remove("active");
@@ -1073,6 +1108,18 @@ function paintWords(ci, t) {
     s.classList.toggle("now", i === active);
     s.classList.toggle("spoken", i < active);
   });
+}
+
+/* ---------- Режим «На слух» ---------- */
+function markHeard(i) {
+  if (heardSet.has(i)) return;
+  heardSet.add(i);
+  document.querySelector(`.cue[data-i="${i}"]`)?.classList.add("heard");
+}
+
+function applyBlind() {
+  document.getElementById("transcript").dataset.blind = blindMode ? "on" : "off";
+  document.getElementById("blindBtn").setAttribute("aria-pressed", String(blindMode));
 }
 
 /* ---------- Разбор слова ----------
@@ -2025,6 +2072,7 @@ document.getElementById("urlForm").onsubmit = async e => {
     idiomAbort?.abort();
     idiomAbort = null;
     IDIOMS = {};
+    heardSet.clear(); // новое видео ещё не слушали — в режиме «на слух» всё скрыто
     trStatus("");
     applyTrMode();
     document.getElementById("offBtn").textContent = "Офлайн";
@@ -2127,6 +2175,11 @@ document.addEventListener("keydown", e => {
   if (e.key === "ArrowLeft" && current > 0) seek(CUES[current - 1].start);
   if (e.key === "ArrowRight" && current < CUES.length - 1) seek(CUES[current + 1].start);
   if (e.key.toLowerCase() === "r") { const c = CUES[current]; c && replay(c); }
+  // T — подсмотреть текущую реплику в режиме «на слух»: на паузе «по фразам»
+  // сначала вспоминаешь услышанное, потом сверяешься — не тянясь к мыши.
+  if (e.key.toLowerCase() === "t" && blindMode && current >= 0) {
+    document.querySelector(`.cue[data-i="${current}"]`)?.classList.add("peek");
+  }
   // Оценка карточки цифрами 1-4: после Enter-проверки руки уже на клавиатуре,
   // тянуться мышью к четырём кнопкам — разрыв ритма повторения.
   if (/^[1-4]$/.test(e.key) && revealed && deck.has(reviewKey)
@@ -2158,6 +2211,18 @@ document.getElementById("stepBtn").onclick = e => {
   localStorage.setItem("razbor.step", stepMode ? "on" : "off");
   e.currentTarget.setAttribute("aria-pressed", String(stepMode));
   toast(stepMode ? "Пауза после каждой фразы — пробел дальше" : "Обычное воспроизведение");
+};
+
+/* Режим «на слух»: скрывать текст до конца фразы, выбор переживает перезагрузку. */
+document.getElementById("blindBtn").onclick = e => {
+  blindMode = !blindMode;
+  localStorage.setItem("razbor.blind", blindMode ? "on" : "off");
+  // Всё до текущего места пользователь уже видел с текстом — прятать это странно
+  if (blindMode) for (let i = 0; i < current; i++) markHeard(i);
+  applyBlind();
+  toast(blindMode
+    ? "Текст откроется после звучания фразы. Подсмотреть: наведение, клик или T"
+    : "Текст виден сразу");
 };
 
 /* Уровень: селектор в панели, выбор переживает перезагрузку. */
@@ -2215,6 +2280,7 @@ document.getElementById("offBtn").onclick = async e => {
 renderTranscript();
 renderDeck();
 applyTrMode();
+applyBlind();
 if (OFFLINE) {
   // Пакет автономен: перевод и уровни зашиты при сборке, сети нет.
   TRANSLATIONS = OFFLINE.translations || {};
