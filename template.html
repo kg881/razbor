@@ -1030,7 +1030,8 @@ const P = {
   play:    () => { if (P.local) videoEl?.play(); else if (ready) player.playVideo(); },
   rate:    r  => { if (P.local) { if (videoEl) videoEl.playbackRate = r; }
                    else if (ready) player.setPlaybackRate(r); },
-  load:    v  => { if (!P.local && ready) player.loadVideoById(v); },
+  // at — секунда, с которой начать: продолжение просмотра с места остановки
+  load:    (v, at = 0) => { if (!P.local && ready) player.loadVideoById(at ? { videoId: v, startSeconds: at } : v); },
 };
 
 /* ---------- Караоке-подсветка ----------
@@ -1279,6 +1280,31 @@ function logStat(kind, n = 1) {
 /* Минуты просмотра: тикаем раз в 15 секунд, пока видео реально играет. */
 setInterval(() => { if (P.playing()) logStat("sec", 15); }, 15000);
 
+/* ---------- Позиция просмотра ----------
+   По каждому видео своя, как dictPos у диктанта: длинный подкаст смотрится
+   в несколько подходов, а плеер каждый раз открывался с нуля — место
+   приходилось искать вручную по расшифровке. */
+const watchPos = JSON.parse(localStorage.getItem("razbor.pos") || "{}");
+
+function savePos() {
+  watchPos[VIDEO_ID] = Math.floor(P.time());
+  localStorage.setItem("razbor.pos", JSON.stringify(watchPos));
+}
+
+/* Откуда продолжать видео. Начало и самый конец не в счёт: до 30-й секунды
+   продолжать нечего, а последние 20 секунд — «досмотрел», следующее открытие
+   честно начинает сначала. dur онлайн — конец последней реплики: длины самого
+   видео IFrame API до загрузки не знает, а речь кончается почти вместе с ним. */
+function resumeAt(vid, dur) {
+  const t = watchPos[vid] || 0;
+  return t > 30 && (!dur || t < dur - 20) ? t : 0;
+}
+
+// Пишем раз в 5 секунд во время игры и при уходе со страницы: перезагрузка
+// теряет не больше пяти секунд просмотра. На паузе не пишем — позиция не движется.
+setInterval(() => { if (P.playing() && P.time() > 5) savePos(); }, 5000);
+addEventListener("pagehide", () => { if (P.time() > 5) savePos(); });
+
 function lastDays(n) {
   const out = [];
   for (let i = n - 1; i >= 0; i--) {
@@ -1466,7 +1492,11 @@ let clozeMode = localStorage.getItem("razbor.cloze") !== "off";
 let typedDiff = null;
 function renderReview() {
   const box = document.getElementById("panelReview");
-  const dueCards = [...deck.entries()].filter(([, c]) => c.due <= Date.now());
+  // Самая просроченная карточка — первой: у неё вспоминаемость упала ниже всех,
+  // ей ждать хуже всего. Без сортировки очередь шла в порядке добавления слов
+  // в колоду — свежие долги показывались раньше давно забытых.
+  const dueCards = [...deck.entries()].filter(([, c]) => c.due <= Date.now())
+    .sort((a, b) => a[1].due - b[1].due);
   if (!dueCards.length) {
     box.innerHTML = `<div class="empty">
       <div class="empty-title">${deck.size ? "На сегодня всё" : "Пока нечего повторять"}</div>
@@ -1973,7 +2003,11 @@ function onYouTubeIframeAPIReady() {
     videoId: VIDEO_ID,
     // cc_load_policy: 0 — гасим родные субтитры YouTube: свои две дорожки
     // мы рисуем ПОД плеером (оверлей поверх плеера запрещён правилами).
-    playerVars: { rel: 0, modestbranding: 1, playsinline: 1, cc_load_policy: 0 },
+    // start — прошлая позиция этого видео: перезагрузка страницы возвращает
+    // на место остановки. Через playerVars, а не seekTo: seek без жеста
+    // пользователя запускал бы воспроизведение, а его блокирует autoplay-политика.
+    playerVars: { rel: 0, modestbranding: 1, playsinline: 1, cc_load_policy: 0,
+      start: Math.floor(resumeAt(VIDEO_ID, CUES.at(-1)?.end)) },
     events: {
       onReady: () => { ready = true; tick(); },
       onError: e => toast(`Плеер: ошибка ${e.data}. Видео недоступно для встраивания.`),
@@ -1992,6 +2026,13 @@ function mountLocalPlayer() {
   videoEl.playsInline = true;
   videoEl.preload = "metadata";
   videoEl.style.cssText = "position:absolute;inset:0;width:100%;height:100%;background:#000";
+  // Офлайн-пакет тоже продолжает с места остановки — на телефоне это основной
+  // сценарий: длинное видео смотрится в несколько подходов. Длительность здесь
+  // известна честно, из метаданных файла.
+  videoEl.addEventListener("loadedmetadata", () => {
+    const at = resumeAt(VIDEO_ID, videoEl.duration);
+    if (at) videoEl.currentTime = at;
+  }, { once: true });
   box.appendChild(videoEl);
   tick();
 }
@@ -2078,9 +2119,12 @@ document.getElementById("urlForm").onsubmit = async e => {
     document.getElementById("offBtn").textContent = "Офлайн";
     renderTranscript();
     renderDeck();
-    P.load(VIDEO_ID);
+    // Продолжаем с места прошлой остановки: открыть подкаст из библиотеки —
+    // значит вернуться туда, где смотрел, а не листать с начала.
+    const at = resumeAt(VIDEO_ID, CUES.at(-1)?.end);
+    P.load(VIDEO_ID, at);
     noteVideo(VIDEO_ID, info.title, { cov: coverage() });
-    toast(`Загружено реплик: ${CUES.length}${info.fromCache ? " (из кэша)" : ""}`);
+    toast(`Загружено реплик: ${CUES.length}${info.fromCache ? " (из кэша)" : ""}${at ? ` · продолжаем с ${fmt(at)}` : ""}`);
     // Перевод и уровни не ждём: строки уже на экране, остальное дотекает поверх.
     loadTranslations(VIDEO_ID, CUES.map(c => c.text));
     loadLevels(VIDEO_ID, CUES.map(c => c.text));
